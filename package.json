@@ -1,5 +1,5 @@
 {
-  "name": "rulesync",
+  "name": "@anand817/rulesync",
   "version": "9.8.0",
   "description": "Unified AI rules management CLI tool that generates configuration files for various AI development tools",
   "keywords": [
@@ -70,6 +70,7 @@
     "pr-continuation": "tsx scripts/pr-continuation.ts",
     "prepare": "simple-git-hooks && pnpm generate",
     "prepublishOnly": "pnpm build",
+    "publish:github": "npm publish --tag multilevel",
     "secretlint": "secretlint --secretlintignore .gitignore \"**/*\"",
     "sort": "sort-package-json",
     "task": "tsx scripts/run-tasks.ts",
@@ -131,6 +132,6 @@
     "pnpm": ">=10"
   },
   "publishConfig": {
-    "access": "public"
+    "registry": "https://npm.pkg.github.com"
   }
 }

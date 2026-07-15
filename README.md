@@ -26,6 +26,32 @@ A Node.js CLI tool that automatically generates configuration files for various 
 npm install -g rulesync
 ```
 
+### Install This Fork via GitHub Packages
+
+Use this flow when you want your fork/branch package globally (without git dependency install):
+
+```bash
+# 1) Configure GitHub Packages auth (read packages)
+echo "@anand817:registry=https://npm.pkg.github.com" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=<YOUR_GITHUB_TOKEN>" >> ~/.npmrc
+
+# 2) Install globally from GitHub Packages
+npm install -g @anand817/rulesync@multilevel
+```
+
+Publish from this repo (maintainer flow):
+
+```bash
+# Token needs write:packages (and repo if private)
+echo "@anand817:registry=https://npm.pkg.github.com" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=<YOUR_GITHUB_TOKEN>" >> ~/.npmrc
+
+# Keep base version aligned (e.g. 9.8.0), publish branch builds as prerelease:
+npm version prerelease --preid=multilevel
+npm run build
+npm run publish:github
+```
+
 Or install from our Homebrew tap (macOS and Linux):
 
 ```bash
