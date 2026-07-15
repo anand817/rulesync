@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 import { encode } from "@toon-format/toon";
 import { z } from "zod/mini";
@@ -44,7 +44,7 @@ import { RooSkill } from "./roo-skill.js";
 import { RovodevSkill } from "./rovodev-skill.js";
 import { RulesyncSkill } from "./rulesync-skill.js";
 import { SimulatedSkill } from "./simulated-skill.js";
-import { getLocalSkillDirNames } from "./skills-utils.js";
+import { getLocalSkillDirEntries } from "./skills-utils.js";
 import { TaktSkill } from "./takt-skill.js";
 import {
   ToolSkill,
@@ -508,41 +508,65 @@ export class SkillsProcessor extends DirFeatureProcessor {
    * Local skills take precedence over curated skills with the same name.
    */
   async loadRulesyncDirs(): Promise<AiDir[]> {
-    // Load local skills (directly under .rulesync/skills/)
-    const localDirNames = [...(await getLocalSkillDirNames(this.inputRoot))];
-
+    // Load local skills recursively from `.rulesync/skills/**/SKILL.md`.
+    const localEntries = await getLocalSkillDirEntries(this.inputRoot);
     const localSkills = await Promise.all(
-      localDirNames.map((dirName) =>
-        RulesyncSkill.fromDir({ outputRoot: this.inputRoot, dirName, global: this.global }),
+      localEntries.map((entry) =>
+        RulesyncSkill.fromDir({
+          outputRoot: this.inputRoot,
+          relativeDirPath: entry.relativeDirPath,
+          dirName: entry.dirName,
+          global: this.global,
+        }),
       ),
     );
-
-    const localSkillNames = new Set(localDirNames);
+    const localRelativePaths = new Set(localEntries.map((entry) => entry.relativeSkillDirPath));
 
     // Load curated (remote) skills from .curated/ subdirectory
     const curatedDirPath = join(this.inputRoot, RULESYNC_CURATED_SKILLS_RELATIVE_DIR_PATH);
     let curatedSkills: RulesyncSkill[] = [];
 
     if (await directoryExists(curatedDirPath)) {
-      const curatedDirPaths = await findFilesByGlobs(join(curatedDirPath, "*"), { type: "dir" });
-      const curatedDirNames = curatedDirPaths.map((path) => basename(path));
+      const curatedSkillFilePaths = await findFilesByGlobs(join(curatedDirPath, "**", "SKILL.md"), {
+        type: "file",
+      });
+      const curatedEntries = curatedSkillFilePaths
+        .map((path) => {
+          const absoluteSkillDir = dirname(path);
+          const relativeFromCurated = relative(curatedDirPath, absoluteSkillDir).replaceAll(
+            "\\",
+            "/",
+          );
+          const parentPath = dirname(relativeFromCurated);
+          const relativeDirPath =
+            parentPath === "."
+              ? RULESYNC_CURATED_SKILLS_RELATIVE_DIR_PATH
+              : join(RULESYNC_CURATED_SKILLS_RELATIVE_DIR_PATH, parentPath);
+          return {
+            relativeSkillDirPath: relativeFromCurated,
+            relativeDirPath,
+            dirName: basename(absoluteSkillDir),
+          };
+        })
+        .toSorted((a, b) => a.relativeSkillDirPath.localeCompare(b.relativeSkillDirPath));
 
-      // Filter out curated skills that conflict with local skills (local wins)
-      const nonConflicting = curatedDirNames.filter((name) => {
-        if (localSkillNames.has(name)) {
-          this.logger.debug(`Skipping curated skill "${name}": local skill takes precedence.`);
+      // Filter out curated skills that conflict with local skills (local wins).
+      const nonConflicting = curatedEntries.filter((entry) => {
+        if (localRelativePaths.has(entry.relativeSkillDirPath)) {
+          this.logger.debug(
+            `Skipping curated skill "${entry.relativeSkillDirPath}": local skill takes precedence.`,
+          );
           return false;
         }
         return true;
       });
 
-      const curatedRelativeDirPath = RULESYNC_CURATED_SKILLS_RELATIVE_DIR_PATH;
       curatedSkills = await Promise.all(
-        nonConflicting.map((dirName) =>
+        nonConflicting.map((entry) =>
           RulesyncSkill.fromDir({
             outputRoot: this.inputRoot,
-            relativeDirPath: curatedRelativeDirPath,
-            dirName,
+            relativeDirPath: entry.relativeDirPath,
+            dirName: entry.dirName,
             global: this.global,
           }),
         ),

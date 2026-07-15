@@ -155,7 +155,7 @@ The `fetch` command allows you to fetch configuration files directly from a Git 
 > [!NOTE]
 > This feature is in development and may change in future releases.
 
-**Note:** The fetch command searches for feature directories (`rules/`, `commands/`, `skills/`, `subagents/`, etc.) directly at the specified path, without requiring a `.rulesync/` directory structure. This allows fetching from external repositories like `vercel-labs/agent-skills` or `anthropics/skills`.
+**Note:** The fetch command searches for feature directories (`rules/`, `commands/`, `skills/`, `subagents/`, etc.) under the specified base path. By default the base path is `.rulesync`. For repositories that expose feature directories at the repo root, pass `--path .`.
 
 ### Source Formats
 
@@ -186,7 +186,15 @@ rulesync fetch owner/repo@ref:path   # Both ref and path
 | `--output <dir>`        | Output directory relative to project root                                                  | `.rulesync`                      |
 | `--conflict <strategy>` | Conflict resolution: `overwrite` or `skip`                                                 | `overwrite`                      |
 | `--ref <ref>`           | Git ref (branch/tag/commit) to fetch from                                                  | Default branch                   |
-| `--path <path>`         | Subdirectory in the repository                                                             | `.` (root)                       |
+| `--path <path>`         | Subdirectory in the repository                                                             | `.rulesync`                      |
+| `--rules-paths <paths>` | Comma-separated rule directory prefixes relative to `rules/`                              | unset (all)                      |
+| `--rules-files <files>` | Comma-separated rule file paths relative to `rules/`                                       | unset (all)                      |
+| `--commands-paths <paths>` | Comma-separated command directory prefixes relative to `commands/`                      | unset (all)                      |
+| `--commands-files <files>` | Comma-separated command file paths relative to `commands/`                              | unset (all)                      |
+| `--subagents-paths <paths>` | Comma-separated subagent directory prefixes relative to `subagents/`                  | unset (all)                      |
+| `--subagents-files <files>` | Comma-separated subagent file paths relative to `subagents/`                          | unset (all)                      |
+| `--skills-paths <paths>` | Comma-separated skill directory prefixes relative to `skills/`                            | unset (all)                      |
+| `--skills-files <files>` | Comma-separated skill file paths relative to `skills/`                                    | unset (all)                      |
 | `--token <token>`       | Git provider token for private repositories                                                | `GITHUB_TOKEN` or `GH_TOKEN` env |
 
 ### Examples
@@ -196,11 +204,21 @@ rulesync fetch owner/repo@ref:path   # Both ref and path
 rulesync fetch vercel-labs/agent-skills --features skills
 rulesync fetch anthropics/skills --features skills
 
-# Fetch all features from a public repository
-rulesync fetch dyoshikawa/rulesync --path .rulesync
+# Fetch all features from a public repository (default path is .rulesync)
+rulesync fetch dyoshikawa/rulesync
+
+# Fetch from repositories that store features at repo root
+rulesync fetch owner/repo --path .
 
 # Fetch only rules and commands from a specific tag
 rulesync fetch owner/repo@v1.0.0 --features rules,commands
+
+# Fetch only selected rules and subagents by directory/file
+rulesync fetch owner/repo --features rules,subagents \
+  --rules-paths core,python \
+  --rules-files core/core-base.md \
+  --subagents-paths research \
+  --subagents-files research/planner.md
 
 # Fetch from a private repository (uses GITHUB_TOKEN env var)
 export GITHUB_TOKEN=ghp_xxxx

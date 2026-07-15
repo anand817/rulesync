@@ -97,6 +97,30 @@ const main = async () => {
       `Comma-separated list of features to fetch (${ALL_FEATURES.join(",")}) or '*' for all`,
       parseCommaSeparatedList,
     )
+    .option("--rules-paths <paths>", "Comma-separated rule directory prefixes", parseCommaSeparatedList)
+    .option("--rules-files <files>", "Comma-separated rule file paths", parseCommaSeparatedList)
+    .option(
+      "--commands-paths <paths>",
+      "Comma-separated command directory prefixes",
+      parseCommaSeparatedList,
+    )
+    .option(
+      "--commands-files <files>",
+      "Comma-separated command file paths",
+      parseCommaSeparatedList,
+    )
+    .option(
+      "--subagents-paths <paths>",
+      "Comma-separated subagent directory prefixes",
+      parseCommaSeparatedList,
+    )
+    .option(
+      "--subagents-files <files>",
+      "Comma-separated subagent file paths",
+      parseCommaSeparatedList,
+    )
+    .option("--skills-paths <paths>", "Comma-separated skill directory prefixes", parseCommaSeparatedList)
+    .option("--skills-files <files>", "Comma-separated skill file paths", parseCommaSeparatedList)
     .option("-r, --ref <ref>", "Branch, tag, or commit SHA to fetch from")
     .option("-p, --path <path>", "Subdirectory path within the repository")
     .option("-o, --output <dir>", "Output directory (default: .rulesync)")

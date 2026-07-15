@@ -19,6 +19,9 @@ vi.mock("./github-client.js", () => ({
   GitHubClient: class MockGitHubClient {
     static resolveToken = vi.fn().mockReturnValue(undefined);
 
+    validateRepository(...args: any[]) {
+      return mockClientInstance.validateRepository(...args);
+    }
     getDefaultBranch(...args: any[]) {
       return mockClientInstance.getDefaultBranch(...args);
     }
@@ -90,6 +93,7 @@ describe("resolveAndFetchSources", () => {
     vi.spyOn(process, "cwd").mockReturnValue(testDir);
 
     mockClientInstance = {
+      validateRepository: vi.fn().mockResolvedValue(true),
       getDefaultBranch: vi.fn().mockResolvedValue("main"),
       resolveRefToSha: vi.fn().mockResolvedValue("abc123def456"),
       listDirectory: vi.fn().mockResolvedValue([]),
@@ -111,7 +115,7 @@ describe("resolveAndFetchSources", () => {
   it("should return zero counts with empty sources", async () => {
     const result = await resolveAndFetchSources({ logger, sources: [], projectRoot: testDir });
 
-    expect(result).toEqual({ fetchedSkillCount: 0, sourcesProcessed: 0 });
+    expect(result).toEqual({ fetchedSkillCount: 0, fetchedFileCount: 0, sourcesProcessed: 0 });
   });
 
   it("should skip fetching when skipSources is true", async () => {
@@ -122,7 +126,7 @@ describe("resolveAndFetchSources", () => {
       options: { skipSources: true },
     });
 
-    expect(result).toEqual({ fetchedSkillCount: 0, sourcesProcessed: 0 });
+    expect(result).toEqual({ fetchedSkillCount: 0, fetchedFileCount: 0, sourcesProcessed: 0 });
     expect(mockClientInstance.getDefaultBranch).not.toHaveBeenCalled();
   });
 
@@ -236,13 +240,87 @@ describe("resolveAndFetchSources", () => {
     expect(writeFileContent).toHaveBeenCalledWith(expectedFilePath, "# My Skill\nContent here.");
   });
 
+  it("should use .rulesync/skills as implicit skills source path", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      async (_owner: string, _repo: string, path: string) => {
+        if (path === ".rulesync/skills") {
+          return [{ name: "my-skill", path: ".rulesync/skills/my-skill", type: "dir" }];
+        }
+        if (path === ".rulesync/skills/my-skill") {
+          return [
+            {
+              name: "SKILL.md",
+              path: ".rulesync/skills/my-skill/SKILL.md",
+              type: "file",
+              size: 100,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("# My Skill\nContent here.");
+
+    const result = await resolveAndFetchSources({
+      logger,
+      sources: [{ source: "https://github.com/org/repo" }],
+      projectRoot: testDir,
+    });
+
+    expect(result.fetchedSkillCount).toBe(1);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "org",
+      "repo",
+      ".rulesync/skills",
+      expect.any(String),
+    );
+  });
+
+  it("should honor explicit source path for github skill installs", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      async (_owner: string, _repo: string, path: string) => {
+        if (path === "catalog/skills") {
+          return [{ name: "my-skill", path: "catalog/skills/my-skill", type: "dir" }];
+        }
+        if (path === "catalog/skills/my-skill") {
+          return [
+            {
+              name: "SKILL.md",
+              path: "catalog/skills/my-skill/SKILL.md",
+              type: "file",
+              size: 100,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("content");
+
+    const result = await resolveAndFetchSources({
+      logger,
+      sources: [{ source: "https://github.com/org/repo", path: "catalog/skills" }],
+      projectRoot: testDir,
+    });
+
+    expect(result.fetchedSkillCount).toBe(1);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "org",
+      "repo",
+      "catalog/skills",
+      expect.any(String),
+    );
+  });
+
   it("should skip skills that exist locally", async () => {
     // Local skill "my-skill" exists
     vi.mocked(directoryExists).mockImplementation(async (path: string) => {
       if (path.endsWith("skills")) return true;
       return false;
     });
-    vi.mocked(findFilesByGlobs).mockResolvedValue([join(testDir, ".rulesync/skills/my-skill")]);
+    vi.mocked(findFilesByGlobs).mockResolvedValue([
+      join(testDir, ".rulesync/skills/my-skill/SKILL.md"),
+    ]);
 
     // Remote has same skill name
     mockClientInstance.listDirectory.mockImplementation(
@@ -284,7 +362,7 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "https://github.com/org/repo", skills: ["skill-a"] }],
+      sources: [{ source: "https://github.com/org/repo", skills: { paths: ["skill-a"] } }],
       projectRoot: testDir,
     });
 
@@ -323,6 +401,47 @@ describe("resolveAndFetchSources", () => {
 
     // First source fetches it, second source skips it
     expect(result.fetchedSkillCount).toBe(1);
+  });
+
+  it("should fetch selected non-skill features using directory/file selectors", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      async (_owner: string, _repo: string, path: string) => {
+        if (path === "rules") {
+          return [
+            { name: "core", path: "rules/core", type: "dir" },
+            { name: "python", path: "rules/python", type: "dir" },
+          ];
+        }
+        if (path === "rules/core") {
+          return [{ name: "base.md", path: "rules/core/base.md", type: "file", size: 40 }];
+        }
+        if (path === "rules/python") {
+          return [{ name: "base.md", path: "rules/python/base.md", type: "file", size: 40 }];
+        }
+        return [];
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("rule content");
+
+    const result = await resolveAndFetchSources({
+      logger,
+      sources: [
+        {
+          source: "https://github.com/org/repo",
+          rules: {
+            paths: ["core"],
+            files: ["core/base.md"],
+          },
+        },
+      ],
+      projectRoot: testDir,
+    });
+
+    expect(result.fetchedFileCount).toBe(1);
+    expect(writeFileContent).toHaveBeenCalledWith(
+      join(testDir, ".rulesync", "rules", "core", "base.md"),
+      "rule content",
+    );
   });
 
   it("should handle 404 for skills directory gracefully", async () => {
@@ -621,7 +740,7 @@ describe("resolveAndFetchSources", () => {
       options: { frozen: true },
     });
 
-    expect(result).toEqual({ fetchedSkillCount: 1, sourcesProcessed: 1 });
+    expect(result).toEqual({ fetchedSkillCount: 1, fetchedFileCount: 0, sourcesProcessed: 1 });
     expect(mockClientInstance.getDefaultBranch).not.toHaveBeenCalled();
     expect(mockClientInstance.resolveRefToSha).not.toHaveBeenCalled();
     expect(writeLockFile).not.toHaveBeenCalled();
@@ -691,7 +810,9 @@ describe("resolveAndFetchSources", () => {
       if (path.endsWith("skills")) return true;
       return false;
     });
-    vi.mocked(findFilesByGlobs).mockResolvedValue([join(testDir, ".rulesync/skills/local-skill")]);
+    vi.mocked(findFilesByGlobs).mockResolvedValue([
+      join(testDir, ".rulesync/skills/local-skill/SKILL.md"),
+    ]);
 
     // remote-skill doesn't exist on disk, so SHA-match skip fails and re-fetch happens
     // Remote has only remote-skill
@@ -852,7 +973,7 @@ describe("resolveAndFetchSources", () => {
         {
           source: "https://dev.azure.com/org/_git/repo",
           transport: "git",
-          skills: ["skill-a"],
+          skills: { paths: ["skill-a"] },
         },
       ],
       projectRoot: testDir,
@@ -873,7 +994,7 @@ describe("resolveAndFetchSources", () => {
 
     // local-skill exists locally
     vi.mocked(directoryExists).mockImplementation(async (path: string) => {
-      if (path.endsWith("skills")) return true;
+      if (path.includes(join(".rulesync", "skills"))) return true;
       return false;
     });
     vi.mocked(findFilesByGlobs).mockResolvedValue([join(testDir, ".rulesync/skills/local-skill")]);
@@ -1024,7 +1145,7 @@ describe("resolveAndFetchSources", () => {
           source: "https://dev.azure.com/org/_git/humanizer",
           transport: "git",
           path: "",
-          skills: ["humanizer"],
+          skills: { paths: ["humanizer"] },
         },
       ],
       projectRoot: testDir,
@@ -1053,7 +1174,7 @@ describe("resolveAndFetchSources", () => {
           source: "https://github.com/blader/humanizer",
           transport: "git",
           path: ".",
-          skills: ["humanizer"],
+          skills: { paths: ["humanizer"] },
         },
       ],
       projectRoot: testDir,
@@ -1079,7 +1200,7 @@ describe("resolveAndFetchSources", () => {
         {
           source: "https://dev.azure.com/org/_git/repo",
           transport: "git",
-          skills: ["humanizer"],
+          skills: { paths: ["humanizer"] },
         },
       ],
       projectRoot: testDir,
@@ -1130,7 +1251,7 @@ describe("resolveAndFetchSources", () => {
           source: "https://github.com/blader/humanizer",
           transport: "git",
           path: ".",
-          skills: ["humanizer"],
+          skills: { paths: ["humanizer"] },
         },
       ],
       projectRoot: testDir,
@@ -1158,7 +1279,7 @@ describe("resolveAndFetchSources", () => {
           source: "https://dev.azure.com/org/_git/multi-skill-repo",
           transport: "git",
           path: ".",
-          skills: ["*"],
+          skills: { paths: ["*"] },
         },
       ],
       projectRoot: testDir,
@@ -1202,7 +1323,7 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "org/humanizer:skills", skills: ["humanizer"] }],
+      sources: [{ source: "org/humanizer:skills", skills: { paths: ["humanizer"] } }],
       projectRoot: testDir,
     });
 
@@ -1236,7 +1357,7 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "org/humanizer:.", skills: ["humanizer"] }],
+      sources: [{ source: "org/humanizer:.", skills: { paths: ["humanizer"] } }],
       projectRoot: testDir,
     });
 
@@ -1274,7 +1395,7 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "org/repo:.", skills: ["nonexistent"] }],
+      sources: [{ source: "org/repo:.", skills: { paths: ["nonexistent"] } }],
       projectRoot: testDir,
     });
 
@@ -1303,7 +1424,7 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "org/repo:.", skills: ["nonexistent"] }],
+      sources: [{ source: "org/repo:.", skills: { paths: ["nonexistent"] } }],
       projectRoot: testDir,
     });
 
@@ -1326,7 +1447,7 @@ describe("resolveAndFetchSources", () => {
         {
           source: "https://dev.azure.com/org/_git/repo",
           transport: "git",
-          skills: ["humanizer"],
+          skills: { paths: ["humanizer"] },
         },
       ],
       projectRoot: testDir,

@@ -750,5 +750,21 @@ describe("config-resolver", () => {
         }),
       ).rejects.toThrow(/outputRoot must not be the filesystem root/);
     });
+
+    it("should reject legacy name-only source skill filters", async () => {
+      await writeFileContent(
+        join(testDir, "rulesync.jsonc"),
+        JSON.stringify({
+          outputRoots: ["./"],
+          sources: [{ source: "owner/repo", skills: ["legacy-name-filter"] }],
+        }),
+      );
+
+      await expect(
+        ConfigResolver.resolve({
+          configPath: join(testDir, "rulesync.jsonc"),
+        }),
+      ).rejects.toThrow();
+    });
   });
 });
