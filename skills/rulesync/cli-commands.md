@@ -195,7 +195,8 @@ rulesync fetch owner/repo@ref:path   # Both ref and path
 | `--subagents-files <files>` | Comma-separated subagent file paths relative to `subagents/`                          | unset (all)                      |
 | `--skills-paths <paths>` | Comma-separated skill directory prefixes relative to `skills/`                            | unset (all)                      |
 | `--skills-files <files>` | Comma-separated skill file paths relative to `skills/`                                    | unset (all)                      |
-| `--token <token>`       | Git provider token for private repositories                                                | `GITHUB_TOKEN` or `GH_TOKEN` env |
+| `--transport <mode>`    | Fetch transport: `github` (REST API) or `git` (git CLI via SSH/credential helper)         | `git`                            |
+| `--token <token>`       | Git provider token for private repositories (`github` transport)                           | `GITHUB_TOKEN` or `GH_TOKEN` env |
 
 ### Examples
 
@@ -232,6 +233,9 @@ rulesync fetch owner/repo --conflict skip
 
 # Fetch from a monorepo subdirectory
 rulesync fetch owner/repo:packages/my-package
+
+# Fetch with git transport (uses SSH keys / git credentials)
+rulesync fetch git@github.com:owner/private-repo.git --transport git
 ```
 
 ## Convert Command

@@ -6,6 +6,7 @@ import { createMockLogger } from "../test-utils/mock-logger.js";
 import { setupTestDirectory } from "../test-utils/test-directories.js";
 import { ensureDir, fileExists, readFileContent, writeFileContent } from "../utils/file.js";
 import { fetchFiles, formatFetchSummary } from "./fetch.js";
+import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
 import { parseSource } from "./source-parser.js";
 
 const logger = createMockLogger();
@@ -36,6 +37,12 @@ vi.mock("./github-client.js", () => ({
       this.statusCode = statusCode;
     }
   },
+}));
+
+vi.mock("./git-client.js", () => ({
+  fetchRepositoryFiles: vi.fn(),
+  resolveDefaultRef: vi.fn(),
+  resolveRefToSha: vi.fn(),
 }));
 
 describe("parseSource", () => {
@@ -296,6 +303,9 @@ describe("fetchFiles", () => {
       listDirectory: vi.fn(),
       getFileContent: vi.fn(),
     };
+    vi.mocked(resolveDefaultRef).mockResolvedValue({ ref: "main", sha: "a".repeat(40) });
+    vi.mocked(resolveRefToSha).mockResolvedValue("a".repeat(40));
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -307,6 +317,47 @@ describe("fetchFiles", () => {
     await expect(
       fetchFiles({ logger, source: "gitlab:owner/repo", outputRoot: testDir }),
     ).rejects.toThrow("GitLab is not yet supported");
+  });
+
+  it("should fetch files via git transport using shorthand source", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: { transport: "git", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveDefaultRef).toHaveBeenCalledWith("git@github.com:owner/repo.git");
+    expect(resolveRefToSha).toHaveBeenCalledWith("git@github.com:owner/repo.git", "main");
+    expect(fetchRepositoryFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "git@github.com:owner/repo.git",
+        ref: "main",
+        basePath: ".rulesync",
+      }),
+    );
+    expect(summary.created).toBe(1);
+    expect(await fileExists(join(testDir, ".rulesync", "rules", "overview.md"))).toBe(true);
+  });
+
+  it("should fetch files via git transport using ssh source URL", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "git@github.com:owner/repo.git",
+      options: { transport: "git", ref: "main", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveRefToSha).toHaveBeenCalledWith("git@github.com:owner/repo.git", "main");
+    expect(summary.created).toBe(1);
   });
 
   it("should fetch files from feature directories directly", async () => {

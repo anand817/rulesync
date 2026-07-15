@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchFiles, formatFetchSummary } from "../../lib/fetch.js";
+import { GitClientError } from "../../lib/git-client.js";
 import { GitHubClientError } from "../../lib/github-client.js";
 import { createMockLogger } from "../../test-utils/mock-logger.js";
 import type { FetchSummary } from "../../types/fetch.js";
@@ -64,6 +65,7 @@ describe("fetchCommand", () => {
             subagentsFiles: undefined,
             skillsPaths: undefined,
             skillsFiles: undefined,
+            transport: "git",
             ref: undefined,
             path: undefined,
             output: undefined,
@@ -94,6 +96,7 @@ describe("fetchCommand", () => {
         source: "owner/repo",
         target: "rulesync",
         features: ["rules", "mcp"],
+        transport: "git",
         ref: "develop",
         path: "packages/shared",
         output: "custom-output",
@@ -117,6 +120,7 @@ describe("fetchCommand", () => {
           options: {
             target: "rulesync",
             features: ["rules", "mcp"],
+            transport: "git",
             ref: "develop",
             path: "packages/shared",
             output: "custom-output",
@@ -188,6 +192,14 @@ describe("fetchCommand", () => {
 
       await expect(fetchCommand(mockLogger, { source: "owner/repo" })).rejects.toThrow(
         "Network error",
+      );
+    });
+
+    it("should handle GitClientError with ssh/git hint", async () => {
+      vi.mocked(fetchFiles).mockRejectedValue(new GitClientError("Authentication failed"));
+
+      await expect(fetchCommand(mockLogger, { source: "owner/repo", transport: "git" })).rejects.toThrow(
+        "Git transport error: Authentication failed",
       );
     });
   });

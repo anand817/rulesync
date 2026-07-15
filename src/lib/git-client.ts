@@ -26,8 +26,11 @@ const ALLOWED_URL_SCHEMES =
 const INSECURE_URL_SCHEMES = /^(git:\/\/|http:\/\/)/;
 
 export class GitClientError extends Error {
+  cause?: unknown;
+
   constructor(message: string, cause?: unknown) {
-    super(message, { cause });
+    super(message);
+    this.cause = cause;
     this.name = "GitClientError";
   }
 }
@@ -190,6 +193,95 @@ export async function fetchSkillFiles(params: {
   } catch (error) {
     if (error instanceof GitClientError) throw error;
     throw new GitClientError(`Failed to fetch skill files from ${url}`, error);
+  } finally {
+    await removeTempDirectory(tmpDir);
+  }
+}
+
+/**
+ * Clone a repository at the given ref and return all files under `basePath`.
+ *
+ * This helper is transport-agnostic and is used by fetch flows that rely on git
+ * authentication (including SSH keys).
+ */
+export async function fetchRepositoryFiles(params: {
+  url: string;
+  ref?: string;
+  basePath: string;
+  logger?: Logger;
+}): Promise<Array<{ relativePath: string; content: string; size: number }>> {
+  const { url, ref, basePath, logger } = params;
+  validateGitUrl(url, { logger });
+  if (ref !== undefined) {
+    validateRef(ref);
+  }
+  if (basePath.split(/[/\\]/).includes("..") || isAbsolute(basePath)) {
+    throw new GitClientError(
+      `Invalid basePath "${basePath}": must be a relative path without ".."`,
+    );
+  }
+  const ctrl = findControlCharacter(basePath);
+  if (ctrl) {
+    throw new GitClientError(
+      `basePath contains control character ${ctrl.hex} at position ${ctrl.position}`,
+    );
+  }
+  await checkGitAvailable();
+
+  const tmpDir = await createTempDirectory("rulesync-git-fetch-");
+  const normalizedBasePath = posix.normalize(basePath.replace(/\\/g, "/")).replace(/\/+$/, "");
+  const isRootPath = normalizedBasePath === "" || normalizedBasePath === ".";
+
+  try {
+    await execFileAsync(
+      "git",
+      [
+        "clone",
+        "--depth",
+        "1",
+        "--no-checkout",
+        "--filter=blob:none",
+        "--",
+        url,
+        tmpDir,
+      ],
+      { timeout: GIT_TIMEOUT_MS },
+    );
+
+    if (ref !== undefined) {
+      await execFileAsync("git", ["-C", tmpDir, "fetch", "--depth", "1", "origin", "--", ref], {
+        timeout: GIT_TIMEOUT_MS,
+      });
+      await execFileAsync("git", ["-C", tmpDir, "checkout", "FETCH_HEAD"], {
+        timeout: GIT_TIMEOUT_MS,
+      });
+    } else {
+      await execFileAsync("git", ["-C", tmpDir, "checkout"], { timeout: GIT_TIMEOUT_MS });
+    }
+
+    const checkoutBasePath = isRootPath ? "." : normalizedBasePath;
+    if (isRootPath) {
+      await execFileAsync("git", ["-C", tmpDir, "sparse-checkout", "disable"], {
+        timeout: GIT_TIMEOUT_MS,
+      });
+    } else {
+      await execFileAsync(
+        "git",
+        ["-C", tmpDir, "sparse-checkout", "set", "--", checkoutBasePath],
+        {
+          timeout: GIT_TIMEOUT_MS,
+        },
+      );
+      await execFileAsync("git", ["-C", tmpDir, "checkout"], { timeout: GIT_TIMEOUT_MS });
+    }
+
+    const outputRoot = isRootPath ? tmpDir : join(tmpDir, checkoutBasePath);
+    if (!(await directoryExists(outputRoot))) return [];
+
+    return await walkDirectory(outputRoot, outputRoot, 0, { totalFiles: 0, totalSize: 0 }, logger);
+  } catch (error) {
+    if (error instanceof GitClientError) throw error;
+    throw new GitClientError(`Failed to fetch repository files from ${url}`, error);
   } finally {
     await removeTempDirectory(tmpDir);
   }

@@ -128,6 +128,10 @@ const main = async () => {
       "-c, --conflict <strategy>",
       "Conflict resolution strategy: skip, overwrite (default: overwrite)",
     )
+    .option(
+      "--transport <transport>",
+      "Fetch transport: github (API/token) or git (SSH/git credentials). Default: git",
+    )
     .option("--token <token>", "Git provider token for private repositories")
     .option("-V, --verbose", "Verbose output")
     .option("-s, --silent", "Suppress all output")

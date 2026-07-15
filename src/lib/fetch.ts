@@ -40,6 +40,7 @@ import {
 } from "../utils/file.js";
 import type { Logger } from "../utils/logger.js";
 import { GitHubClient, GitHubClientError } from "./github-client.js";
+import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
 import { parseSource } from "./source-parser.js";
 
@@ -261,6 +262,176 @@ function resolveFeatures(features?: string[]): Feature[] {
   return features.filter((f): f is Feature => ALL_FEATURES.includes(f as Feature));
 }
 
+function isDirectoryFeaturePath(path: string): boolean {
+  return !path.includes(".");
+}
+
+function matchesFeaturePath(relativePath: string, featurePath: string): boolean {
+  if (!isDirectoryFeaturePath(featurePath)) {
+    return relativePath === featurePath;
+  }
+  return relativePath === featurePath || relativePath.startsWith(`${featurePath}/`);
+}
+
+function toGitUrlFromSource(source: string): { gitUrl: string; parsedSource?: ParsedSource } {
+  try {
+    const parsed = parseSource(source);
+    if (parsed.provider === "github") {
+      return { gitUrl: `git@github.com:${parsed.owner}/${parsed.repo}.git`, parsedSource: parsed };
+    }
+    if (parsed.provider === "gitlab") {
+      return { gitUrl: `git@gitlab.com:${parsed.owner}/${parsed.repo}.git`, parsedSource: parsed };
+    }
+  } catch {
+    // Source may already be a full git URL (e.g. git@host:org/repo.git or ssh://...).
+    return { gitUrl: source };
+  }
+  throw new Error(`Unsupported source for git transport: ${source}`);
+}
+
+async function fetchFilesViaGit(params: {
+  source: string;
+  options: FetchOptions;
+  outputRoot: string;
+  enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
+  outputDir: string;
+  conflictStrategy: ConflictStrategy;
+  target: FetchTarget;
+  logger: Logger;
+}): Promise<FetchSummary> {
+  const {
+    source,
+    options,
+    outputRoot,
+    enabledFeatures,
+    featureSelectors,
+    outputDir,
+    conflictStrategy,
+    target,
+    logger,
+  } = params;
+  const { gitUrl, parsedSource } = toGitUrlFromSource(source);
+  const hasExplicitPath = options.path !== undefined || parsedSource?.path !== undefined;
+  const resolvedPath = toPosixPath(options.path ?? parsedSource?.path ?? RULESYNC_RELATIVE_DIR_PATH);
+
+  const requestedRef = options.ref ?? parsedSource?.ref;
+  const ref = requestedRef ?? (await resolveDefaultRef(gitUrl)).ref;
+  const resolvedSha = /^[0-9a-f]{40}$/i.test(ref) ? ref : await resolveRefToSha(gitUrl, ref);
+
+  async function collectFilesFromBasePath(basePath: string): Promise<
+    Array<{ relativePath: string; content: string; size: number }>
+  > {
+    const repositoryFiles = await fetchRepositoryFiles({
+      url: gitUrl,
+      ref,
+      basePath,
+      logger,
+    });
+    const featurePathEntries = enabledFeatures.flatMap((feature) =>
+      FEATURE_PATHS[feature].map((featurePath) => ({ feature, featurePath })),
+    );
+    return repositoryFiles.filter((file) =>
+      featurePathEntries.some(({ feature, featurePath }) => {
+        if (!matchesFeaturePath(toPosixPath(file.relativePath), featurePath)) {
+          return false;
+        }
+        if (!isDirectoryFeaturePath(featurePath)) {
+          return matchesFeatureSelector(featurePath, featureSelectors[feature]);
+        }
+        const normalizedRelativePath = normalizeRelativePath(file.relativePath);
+        const featureRelativePath = normalizedRelativePath.startsWith(`${featurePath}/`)
+          ? normalizedRelativePath.substring(featurePath.length + 1)
+          : normalizedRelativePath;
+        return matchesFeatureSelector(featureRelativePath, featureSelectors[feature]);
+      }),
+    );
+  }
+
+  let filesToFetch = await collectFilesFromBasePath(resolvedPath);
+  const shouldTryLegacyRootFallback = !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
+  if (filesToFetch.length === 0 && shouldTryLegacyRootFallback) {
+    logger.debug('No files found under default ".rulesync" base path, retrying fetch from repository root.');
+    filesToFetch = await collectFilesFromBasePath(".");
+  }
+
+  if (filesToFetch.length === 0) {
+    logger.warn(`No files found matching enabled features: ${enabledFeatures.join(", ")}`);
+    return {
+      source,
+      ref: resolvedSha,
+      files: [],
+      created: 0,
+      overwritten: 0,
+      skipped: 0,
+    };
+  }
+
+  if (isToolTarget(target)) {
+    const tempDir = await createTempDirectory();
+    try {
+      for (const file of filesToFetch) {
+        const localPath = join(tempDir, file.relativePath);
+        await writeFileContent(localPath, file.content);
+      }
+
+      const outputBasePath = join(outputRoot, outputDir);
+      const { convertedPaths } = await convertFetchedFilesToRulesync({
+        tempDir,
+        outputDir: outputBasePath,
+        target,
+        features: enabledFeatures,
+        logger,
+      });
+
+      const results: FetchFileResult[] = convertedPaths.map((relativePath) => ({
+        relativePath,
+        status: "created" as const,
+      }));
+      return {
+        source,
+        ref: resolvedSha,
+        files: results,
+        created: results.length,
+        overwritten: 0,
+        skipped: 0,
+      };
+    } finally {
+      await removeTempDirectory(tempDir);
+    }
+  }
+
+  const outputBasePath = join(outputRoot, outputDir);
+  const results: FetchFileResult[] = [];
+
+  for (const file of filesToFetch) {
+    const relativePath = toPosixPath(file.relativePath);
+    checkPathTraversal({
+      relativePath,
+      intendedRootDir: outputBasePath,
+    });
+    validateFileSize(relativePath, file.size);
+
+    const localPath = join(outputBasePath, relativePath);
+    const exists = await fileExists(localPath);
+    if (exists && conflictStrategy === "skip") {
+      results.push({ relativePath, status: "skipped" });
+      continue;
+    }
+    await writeFileContent(localPath, file.content);
+    results.push({ relativePath, status: exists ? "overwritten" : "created" });
+  }
+
+  return {
+    source,
+    ref: resolvedSha,
+    files: results,
+    created: results.filter((r) => r.status === "created").length,
+    overwritten: results.filter((r) => r.status === "overwritten").length,
+    skipped: results.filter((r) => r.status === "skipped").length,
+  };
+}
+
 /**
  * Type guard for error objects with statusCode
  */
@@ -307,21 +478,7 @@ export type FetchParams = {
 export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
   const { source, options = {}, outputRoot = process.cwd(), logger } = params;
 
-  // Parse source
-  const parsed = parseSource(source);
-
-  // Check if provider is supported
-  if (parsed.provider === "gitlab") {
-    throw new Error(
-      "GitLab is not yet supported. Currently only GitHub repositories are supported.",
-    );
-  }
-
   // Resolve options
-  const resolvedRef = options.ref ?? parsed.ref;
-  const hasExplicitPath = options.path !== undefined || parsed.path !== undefined;
-  // Normalize backslashes to forward slashes for GitHub API compatibility.
-  const resolvedPath = toPosixPath(options.path ?? parsed.path ?? RULESYNC_RELATIVE_DIR_PATH);
   const outputDir = options.output ?? RULESYNC_RELATIVE_DIR_PATH;
   const conflictStrategy: ConflictStrategy = options.conflict ?? "overwrite";
   const enabledFeatures = resolveFeatures(options.features);
@@ -332,12 +489,41 @@ export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
     subagents: { paths: options.subagentsPaths, files: options.subagentsFiles },
     skills: { paths: options.skillsPaths, files: options.skillsFiles },
   };
+  const transport = options.transport ?? "github";
 
   // Validate output directory to prevent path traversal attacks
   checkPathTraversal({
     relativePath: outputDir,
     intendedRootDir: outputRoot,
   });
+
+  if (transport === "git") {
+    return fetchFilesViaGit({
+      source,
+      options,
+      outputRoot,
+      enabledFeatures,
+      featureSelectors,
+      outputDir,
+      conflictStrategy,
+      target,
+      logger,
+    });
+  }
+
+  // Parse source
+  const parsed = parseSource(source);
+
+  // Check if provider is supported
+  if (parsed.provider === "gitlab") {
+    throw new Error(
+      "GitLab is not yet supported. Currently only GitHub repositories are supported.",
+    );
+  }
+
+  const resolvedRef = options.ref ?? parsed.ref;
+  const hasExplicitPath = options.path !== undefined || parsed.path !== undefined;
+  const resolvedPath = toPosixPath(options.path ?? parsed.path ?? RULESYNC_RELATIVE_DIR_PATH);
 
   // Initialize GitHub client
   const token = GitHubClient.resolveToken(options.token);

@@ -53,6 +53,7 @@ const FetchOptionsSchema = z.looseObject({
   subagentsFiles: z.optional(z.array(z.string())),
   skillsPaths: z.optional(z.array(z.string())),
   skillsFiles: z.optional(z.array(z.string())),
+  transport: z.optional(z.enum(["github", "git"])),
   ref: z.optional(z.string()),
   path: z.optional(z.string()),
   output: z.optional(z.string()),
