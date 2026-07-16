@@ -39,8 +39,10 @@ import {
   writeFileContent,
 } from "../utils/file.js";
 import type { Logger } from "../utils/logger.js";
+import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
 import { GitHubClient, GitHubClientError } from "./github-client.js";
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
+import { resolveGitUrlFromSource } from "./source-git-url.js";
 import { parseSource } from "./source-parser.js";
 
 /**
@@ -56,6 +58,43 @@ const FEATURE_PATHS: Record<Feature, string[]> = {
   hooks: [RULESYNC_HOOKS_FILE_NAME],
   permissions: [RULESYNC_PERMISSIONS_FILE_NAME],
 };
+
+type FeatureSelector = {
+  paths?: string[];
+  files?: string[];
+};
+
+type FeatureSelectorMap = Partial<Record<Feature, FeatureSelector>>;
+
+function normalizeSelectorPath(path: string): string {
+  return toPosixPath(path)
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+function normalizeRelativePath(path: string): string {
+  return toPosixPath(path).replace(/^\.\/+/, "");
+}
+
+function pathMatchesPrefix(relativePath: string, prefix: string): boolean {
+  if (prefix.length === 0 || prefix === ".") return true;
+  return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+}
+
+function matchesFeatureSelector(relativePath: string, selector?: FeatureSelector): boolean {
+  if (!selector) return true;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const pathSelectors = selector.paths?.map((path) => normalizeSelectorPath(path)) ?? [];
+  const fileSelectors = selector.files?.map((path) => normalizeSelectorPath(path)) ?? [];
+
+  const hasAnySelectors = pathSelectors.length > 0 || fileSelectors.length > 0;
+  if (!hasAnySelectors) return true;
+
+  if (fileSelectors.includes(normalizedPath)) {
+    return true;
+  }
+  return pathSelectors.some((prefix) => pathMatchesPrefix(normalizedPath, prefix));
+}
 
 /**
  * Check if target is a tool target (not rulesync)
@@ -226,6 +265,169 @@ function resolveFeatures(features?: string[]): Feature[] {
   return features.filter((f): f is Feature => ALL_FEATURES.includes(f as Feature));
 }
 
+function isDirectoryFeaturePath(path: string): boolean {
+  return !path.includes(".");
+}
+
+function matchesFeaturePath(relativePath: string, featurePath: string): boolean {
+  if (!isDirectoryFeaturePath(featurePath)) {
+    return relativePath === featurePath;
+  }
+  return relativePath === featurePath || relativePath.startsWith(`${featurePath}/`);
+}
+
+async function fetchFilesViaGit(params: {
+  source: string;
+  options: FetchOptions;
+  outputRoot: string;
+  enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
+  outputDir: string;
+  conflictStrategy: ConflictStrategy;
+  target: FetchTarget;
+  logger: Logger;
+}): Promise<FetchSummary> {
+  const {
+    source,
+    options,
+    outputRoot,
+    enabledFeatures,
+    featureSelectors,
+    outputDir,
+    conflictStrategy,
+    target,
+    logger,
+  } = params;
+  const { gitUrl, parsedSource } = resolveGitUrlFromSource({
+    source,
+    gitProtocol: options.gitProtocol,
+    allowRawGitUrl: true,
+  });
+  const hasExplicitPath = options.path !== undefined || parsedSource?.path !== undefined;
+  const resolvedPath = toPosixPath(
+    options.path ?? parsedSource?.path ?? RULESYNC_RELATIVE_DIR_PATH,
+  );
+
+  const requestedRef = options.ref ?? parsedSource?.ref;
+  const ref = requestedRef ?? (await resolveDefaultRef(gitUrl)).ref;
+  const resolvedSha = /^[0-9a-f]{40}$/i.test(ref) ? ref : await resolveRefToSha(gitUrl, ref);
+
+  async function collectFilesFromBasePath(
+    basePath: string,
+  ): Promise<Array<{ relativePath: string; content: string; size: number }>> {
+    const repositoryFiles = await fetchRepositoryFiles({
+      url: gitUrl,
+      ref,
+      basePath,
+      logger,
+    });
+    const featurePathEntries = enabledFeatures.flatMap((feature) =>
+      FEATURE_PATHS[feature].map((featurePath) => ({ feature, featurePath })),
+    );
+    return repositoryFiles.filter((file) =>
+      featurePathEntries.some(({ feature, featurePath }) => {
+        if (!matchesFeaturePath(toPosixPath(file.relativePath), featurePath)) {
+          return false;
+        }
+        if (!isDirectoryFeaturePath(featurePath)) {
+          return matchesFeatureSelector(featurePath, featureSelectors[feature]);
+        }
+        const normalizedRelativePath = normalizeRelativePath(file.relativePath);
+        const featureRelativePath = normalizedRelativePath.startsWith(`${featurePath}/`)
+          ? normalizedRelativePath.substring(featurePath.length + 1)
+          : normalizedRelativePath;
+        return matchesFeatureSelector(featureRelativePath, featureSelectors[feature]);
+      }),
+    );
+  }
+
+  let filesToFetch = await collectFilesFromBasePath(resolvedPath);
+  const shouldTryLegacyRootFallback =
+    !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
+  if (filesToFetch.length === 0 && shouldTryLegacyRootFallback) {
+    logger.debug(
+      'No files found under default ".rulesync" base path, retrying fetch from repository root.',
+    );
+    filesToFetch = await collectFilesFromBasePath(".");
+  }
+
+  if (filesToFetch.length === 0) {
+    logger.warn(`No files found matching enabled features: ${enabledFeatures.join(", ")}`);
+    return {
+      source,
+      ref: resolvedSha,
+      files: [],
+      created: 0,
+      overwritten: 0,
+      skipped: 0,
+    };
+  }
+
+  if (isToolTarget(target)) {
+    const tempDir = await createTempDirectory();
+    try {
+      for (const file of filesToFetch) {
+        const localPath = join(tempDir, file.relativePath);
+        await writeFileContent(localPath, file.content);
+      }
+
+      const outputBasePath = join(outputRoot, outputDir);
+      const { convertedPaths } = await convertFetchedFilesToRulesync({
+        tempDir,
+        outputDir: outputBasePath,
+        target,
+        features: enabledFeatures,
+        logger,
+      });
+
+      const results: FetchFileResult[] = convertedPaths.map((relativePath) => ({
+        relativePath,
+        status: "created" as const,
+      }));
+      return {
+        source,
+        ref: resolvedSha,
+        files: results,
+        created: results.length,
+        overwritten: 0,
+        skipped: 0,
+      };
+    } finally {
+      await removeTempDirectory(tempDir);
+    }
+  }
+
+  const outputBasePath = join(outputRoot, outputDir);
+  const results: FetchFileResult[] = [];
+
+  for (const file of filesToFetch) {
+    const relativePath = toPosixPath(file.relativePath);
+    checkPathTraversal({
+      relativePath,
+      intendedRootDir: outputBasePath,
+    });
+    validateFileSize(relativePath, file.size);
+
+    const localPath = join(outputBasePath, relativePath);
+    const exists = await fileExists(localPath);
+    if (exists && conflictStrategy === "skip") {
+      results.push({ relativePath, status: "skipped" });
+      continue;
+    }
+    await writeFileContent(localPath, file.content);
+    results.push({ relativePath, status: exists ? "overwritten" : "created" });
+  }
+
+  return {
+    source,
+    ref: resolvedSha,
+    files: results,
+    created: results.filter((r) => r.status === "created").length,
+    overwritten: results.filter((r) => r.status === "overwritten").length,
+    skipped: results.filter((r) => r.status === "skipped").length,
+  };
+}
+
 /**
  * Type guard for error objects with statusCode
  */
@@ -261,6 +463,261 @@ export type FetchParams = {
   logger: Logger;
 };
 
+type ResolvedFetchExecutionOptions = {
+  outputDir: string;
+  conflictStrategy: ConflictStrategy;
+  enabledFeatures: Feature[];
+  target: FetchTarget;
+  featureSelectors: FeatureSelectorMap;
+  transport: "github" | "git";
+};
+
+type GithubFetchContext = {
+  parsed: ParsedSource;
+  client: GitHubClient;
+  ref: string;
+  hasExplicitPath: boolean;
+  resolvedPath: string;
+};
+
+type RemoteFetchFile = { remotePath: string; relativePath: string; size: number };
+
+function resolveFetchExecutionOptions(options: FetchOptions): ResolvedFetchExecutionOptions {
+  return {
+    outputDir: options.output ?? RULESYNC_RELATIVE_DIR_PATH,
+    conflictStrategy: options.conflict ?? "overwrite",
+    enabledFeatures: resolveFeatures(options.features),
+    target: options.target ?? "rulesync",
+    featureSelectors: {
+      rules: { paths: options.rulesPaths, files: options.rulesFiles },
+      commands: { paths: options.commandsPaths, files: options.commandsFiles },
+      subagents: { paths: options.subagentsPaths, files: options.subagentsFiles },
+      skills: { paths: options.skillsPaths, files: options.skillsFiles },
+    },
+    transport: options.transport ?? "github",
+  };
+}
+
+async function createGithubFetchContext(params: {
+  source: string;
+  options: FetchOptions;
+  logger: Logger;
+}): Promise<GithubFetchContext> {
+  const { source, options, logger } = params;
+  const parsed = parseSource(source);
+
+  if (parsed.provider === "gitlab") {
+    throw new Error(
+      "GitLab is not yet supported. Currently only GitHub repositories are supported.",
+    );
+  }
+
+  const hasExplicitPath = options.path !== undefined || parsed.path !== undefined;
+  const resolvedPath = toPosixPath(options.path ?? parsed.path ?? RULESYNC_RELATIVE_DIR_PATH);
+  const token = GitHubClient.resolveToken(options.token);
+  const client = new GitHubClient({ token });
+
+  logger.debug(`Validating repository: ${parsed.owner}/${parsed.repo}`);
+  const isValid = await client.validateRepository(parsed.owner, parsed.repo);
+  if (!isValid) {
+    throw new GitHubClientError(
+      `Repository not found: ${parsed.owner}/${parsed.repo}. Check the repository name and your access permissions.`,
+      404,
+    );
+  }
+
+  const resolvedRef = options.ref ?? parsed.ref;
+  const ref = resolvedRef ?? (await client.getDefaultBranch(parsed.owner, parsed.repo));
+  logger.debug(`Using ref: ${ref}`);
+
+  return { parsed, client, ref, hasExplicitPath, resolvedPath };
+}
+
+async function collectGithubFilesFromPath(params: {
+  context: GithubFetchContext;
+  basePath: string;
+  enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
+  logger: Logger;
+}): Promise<RemoteFetchFile[]> {
+  const { context, basePath, enabledFeatures, featureSelectors, logger } = params;
+  const semaphore = new Semaphore(FETCH_CONCURRENCY_LIMIT);
+  return collectFeatureFiles({
+    client: context.client,
+    owner: context.parsed.owner,
+    repo: context.parsed.repo,
+    ref: context.ref,
+    basePath,
+    enabledFeatures,
+    featureSelectors,
+    semaphore,
+    logger,
+  });
+}
+
+async function collectGithubFilesWithFallback(params: {
+  context: GithubFetchContext;
+  enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
+  logger: Logger;
+}): Promise<{ filesToFetch: RemoteFetchFile[]; selectedPath: string }> {
+  const { context, enabledFeatures, featureSelectors, logger } = params;
+  const { resolvedPath, hasExplicitPath } = context;
+
+  let filesToFetch = await collectGithubFilesFromPath({
+    context,
+    basePath: resolvedPath,
+    enabledFeatures,
+    featureSelectors,
+    logger,
+  });
+  let selectedPath = resolvedPath;
+
+  const shouldTryLegacyRootFallback =
+    !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
+  if (filesToFetch.length === 0 && shouldTryLegacyRootFallback) {
+    logger.debug(
+      'No files found under default ".rulesync" base path, retrying fetch from repository root.',
+    );
+    selectedPath = ".";
+    filesToFetch = await collectGithubFilesFromPath({
+      context,
+      basePath: selectedPath,
+      enabledFeatures,
+      featureSelectors,
+      logger,
+    });
+  }
+
+  return { filesToFetch, selectedPath };
+}
+
+function createEmptyFetchSummary(params: {
+  source: string;
+  ref: string;
+  enabledFeatures: Feature[];
+  logger: Logger;
+}): FetchSummary {
+  const { source, ref, enabledFeatures, logger } = params;
+  logger.warn(`No files found matching enabled features: ${enabledFeatures.join(", ")}`);
+  return {
+    source,
+    ref,
+    files: [],
+    created: 0,
+    overwritten: 0,
+    skipped: 0,
+  };
+}
+
+async function writeGithubFilesToDisk(params: {
+  filesToFetch: RemoteFetchFile[];
+  outputRoot: string;
+  outputDir: string;
+  conflictStrategy: ConflictStrategy;
+  context: GithubFetchContext;
+  source: string;
+}): Promise<FetchSummary> {
+  const { filesToFetch, outputRoot, outputDir, conflictStrategy, context, source } = params;
+  const semaphore = new Semaphore(FETCH_CONCURRENCY_LIMIT);
+  const outputBasePath = join(outputRoot, outputDir);
+
+  for (const { relativePath, size } of filesToFetch) {
+    checkPathTraversal({
+      relativePath,
+      intendedRootDir: outputBasePath,
+    });
+    validateFileSize(relativePath, size);
+  }
+
+  const results = await Promise.all(
+    filesToFetch.map(async ({ remotePath, relativePath }) => {
+      const localPath = join(outputBasePath, relativePath);
+      const exists = await fileExists(localPath);
+
+      if (exists && conflictStrategy === "skip") {
+        return { relativePath, status: "skipped" as const };
+      }
+
+      const content = await withSemaphore(semaphore, () =>
+        context.client.getFileContent(
+          context.parsed.owner,
+          context.parsed.repo,
+          remotePath,
+          context.ref,
+        ),
+      );
+      await writeFileContent(localPath, content);
+      return { relativePath, status: exists ? ("overwritten" as const) : ("created" as const) };
+    }),
+  );
+
+  return {
+    source,
+    ref: context.ref,
+    files: results,
+    created: results.filter((r) => r.status === "created").length,
+    overwritten: results.filter((r) => r.status === "overwritten").length,
+    skipped: results.filter((r) => r.status === "skipped").length,
+  };
+}
+
+async function fetchFilesViaGitHub(params: {
+  source: string;
+  options: FetchOptions;
+  outputRoot: string;
+  executionOptions: ResolvedFetchExecutionOptions;
+  logger: Logger;
+}): Promise<FetchSummary> {
+  const { source, options, outputRoot, executionOptions, logger } = params;
+  const { outputDir, conflictStrategy, enabledFeatures, target, featureSelectors } =
+    executionOptions;
+
+  const context = await createGithubFetchContext({ source, options, logger });
+  const sourceLabel = `${context.parsed.owner}/${context.parsed.repo}`;
+  const { filesToFetch, selectedPath } = await collectGithubFilesWithFallback({
+    context,
+    enabledFeatures,
+    featureSelectors,
+    logger,
+  });
+
+  if (isToolTarget(target)) {
+    return fetchAndConvertToolFiles({
+      client: context.client,
+      parsed: context.parsed,
+      ref: context.ref,
+      resolvedPath: selectedPath,
+      enabledFeatures,
+      featureSelectors,
+      target,
+      outputDir,
+      outputRoot,
+      conflictStrategy,
+      logger,
+      preCollectedFiles: filesToFetch,
+    });
+  }
+
+  if (filesToFetch.length === 0) {
+    return createEmptyFetchSummary({
+      source: sourceLabel,
+      ref: context.ref,
+      enabledFeatures,
+      logger,
+    });
+  }
+
+  return writeGithubFilesToDisk({
+    filesToFetch,
+    outputRoot,
+    outputDir,
+    conflictStrategy,
+    context,
+    source: sourceLabel,
+  });
+}
+
 /**
  * Fetch files from a Git repository
  * Searches for feature directories (rules/, commands/, skills/, etc.) directly at the specified path
@@ -271,25 +728,9 @@ export type FetchParams = {
  */
 export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
   const { source, options = {}, outputRoot = process.cwd(), logger } = params;
-
-  // Parse source
-  const parsed = parseSource(source);
-
-  // Check if provider is supported
-  if (parsed.provider === "gitlab") {
-    throw new Error(
-      "GitLab is not yet supported. Currently only GitHub repositories are supported.",
-    );
-  }
-
-  // Resolve options
-  const resolvedRef = options.ref ?? parsed.ref;
-  // Normalize backslashes to forward slashes for GitHub API compatibility.
-  const resolvedPath = toPosixPath(options.path ?? parsed.path ?? ".");
-  const outputDir = options.output ?? RULESYNC_RELATIVE_DIR_PATH;
-  const conflictStrategy: ConflictStrategy = options.conflict ?? "overwrite";
-  const enabledFeatures = resolveFeatures(options.features);
-  const target: FetchTarget = options.target ?? "rulesync";
+  const executionOptions = resolveFetchExecutionOptions(options);
+  const { outputDir, conflictStrategy, enabledFeatures, target, featureSelectors, transport } =
+    executionOptions;
 
   // Validate output directory to prevent path traversal attacks
   checkPathTraversal({
@@ -297,116 +738,26 @@ export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
     intendedRootDir: outputRoot,
   });
 
-  // Initialize GitHub client
-  const token = GitHubClient.resolveToken(options.token);
-  const client = new GitHubClient({ token });
-
-  // Validate repository
-  logger.debug(`Validating repository: ${parsed.owner}/${parsed.repo}`);
-  const isValid = await client.validateRepository(parsed.owner, parsed.repo);
-  if (!isValid) {
-    throw new GitHubClientError(
-      `Repository not found: ${parsed.owner}/${parsed.repo}. Check the repository name and your access permissions.`,
-      404,
-    );
-  }
-
-  // Resolve ref to use
-  const ref = resolvedRef ?? (await client.getDefaultBranch(parsed.owner, parsed.repo));
-  logger.debug(`Using ref: ${ref}`);
-
-  // If target is a tool format, use conversion flow
-  if (isToolTarget(target)) {
-    return fetchAndConvertToolFiles({
-      client,
-      parsed,
-      ref,
-      resolvedPath,
-      enabledFeatures,
-      target,
-      outputDir,
+  if (transport === "git") {
+    return fetchFilesViaGit({
+      source,
+      options,
       outputRoot,
+      enabledFeatures,
+      featureSelectors,
+      outputDir,
       conflictStrategy,
+      target,
       logger,
     });
   }
-
-  // Create semaphore for concurrency control
-  const semaphore = new Semaphore(FETCH_CONCURRENCY_LIMIT);
-
-  // Collect all files to fetch from feature directories directly
-  const filesToFetch = await collectFeatureFiles({
-    client,
-    owner: parsed.owner,
-    repo: parsed.repo,
-    basePath: resolvedPath,
-    ref,
-    enabledFeatures,
-    semaphore,
+  return fetchFilesViaGitHub({
+    source,
+    options,
+    outputRoot,
+    executionOptions,
     logger,
   });
-
-  if (filesToFetch.length === 0) {
-    logger.warn(`No files found matching enabled features: ${enabledFeatures.join(", ")}`);
-    return {
-      source: `${parsed.owner}/${parsed.repo}`,
-      ref,
-      files: [],
-      created: 0,
-      overwritten: 0,
-      skipped: 0,
-    };
-  }
-
-  // Process files in parallel with concurrency control
-  const outputBasePath = join(outputRoot, outputDir);
-
-  // Validate paths and check file sizes first (synchronous checks)
-  for (const { relativePath, size } of filesToFetch) {
-    checkPathTraversal({
-      relativePath,
-      intendedRootDir: outputBasePath,
-    });
-
-    validateFileSize(relativePath, size);
-  }
-
-  // Process files in parallel with concurrency control
-  // Note: Promise.all fails fast - if any promise rejects, others continue running but
-  // may have already written files. This behavior is consistent with sequential execution,
-  // but the window for partial writes is larger with parallel execution.
-  const results = await Promise.all(
-    filesToFetch.map(async ({ remotePath, relativePath }) => {
-      const localPath = join(outputBasePath, relativePath);
-      const exists = await fileExists(localPath);
-
-      if (exists && conflictStrategy === "skip") {
-        logger.debug(`Skipping existing file: ${relativePath}`);
-        return { relativePath, status: "skipped" as const };
-      }
-
-      const content = await withSemaphore(semaphore, () =>
-        client.getFileContent(parsed.owner, parsed.repo, remotePath, ref),
-      );
-      await writeFileContent(localPath, content);
-
-      const status = exists ? ("overwritten" as const) : ("created" as const);
-      logger.debug(`Wrote: ${relativePath} (${status})`);
-      return { relativePath, status };
-    }),
-  );
-
-  // Calculate summary
-  const summary: FetchSummary = {
-    source: `${parsed.owner}/${parsed.repo}`,
-    ref,
-    files: results,
-    created: results.filter((r) => r.status === "created").length,
-    overwritten: results.filter((r) => r.status === "overwritten").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-  };
-
-  return summary;
 }
 
 /**
@@ -419,10 +770,21 @@ async function collectFeatureFiles(params: {
   basePath: string;
   ref: string;
   enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
   semaphore: Semaphore;
   logger: Logger;
 }): Promise<Array<{ remotePath: string; relativePath: string; size: number }>> {
-  const { client, owner, repo, basePath, ref, enabledFeatures, semaphore, logger } = params;
+  const {
+    client,
+    owner,
+    repo,
+    basePath,
+    ref,
+    enabledFeatures,
+    featureSelectors,
+    semaphore,
+    logger,
+  } = params;
 
   // Cache directory listing results to avoid duplicate API calls
   // File-based features (ignore, mcp, hooks) all list the same basePath directory
@@ -442,7 +804,7 @@ async function collectFeatureFiles(params: {
   );
 
   const results = await Promise.all(
-    tasks.map(async ({ featurePath }) => {
+    tasks.map(async ({ feature, featurePath }) => {
       const fullPath =
         basePath === "." || basePath === "" ? featurePath : posix.join(basePath, featurePath);
       const collected: Array<{ remotePath: string; relativePath: string; size: number }> = [];
@@ -456,7 +818,7 @@ async function collectFeatureFiles(params: {
               basePath === "." || basePath === "" ? "." : basePath,
             );
             const fileEntry = entries.find((e) => e.name === featurePath && e.type === "file");
-            if (fileEntry) {
+            if (fileEntry && matchesFeatureSelector(featurePath, featureSelectors[feature])) {
               collected.push({
                 remotePath: fileEntry.path,
                 relativePath: featurePath,
@@ -488,6 +850,13 @@ async function collectFeatureFiles(params: {
               basePath === "." || basePath === ""
                 ? file.path
                 : file.path.substring(basePath.length + 1);
+
+            const featureRelativePath = relativePath.startsWith(`${featurePath}/`)
+              ? relativePath.substring(featurePath.length + 1)
+              : relativePath;
+            if (!matchesFeatureSelector(featureRelativePath, featureSelectors[feature])) {
+              continue;
+            }
 
             collected.push({
               remotePath: file.path,
@@ -522,11 +891,13 @@ async function fetchAndConvertToolFiles(params: {
   ref: string;
   resolvedPath: string;
   enabledFeatures: Feature[];
+  featureSelectors: FeatureSelectorMap;
   target: ToolTarget;
   outputDir: string;
   outputRoot: string;
   conflictStrategy: ConflictStrategy;
   logger: Logger;
+  preCollectedFiles?: Array<{ remotePath: string; relativePath: string; size: number }>;
 }): Promise<FetchSummary> {
   const {
     client,
@@ -534,11 +905,13 @@ async function fetchAndConvertToolFiles(params: {
     ref,
     resolvedPath,
     enabledFeatures,
+    featureSelectors,
     target,
     outputDir,
     outputRoot,
     conflictStrategy: _conflictStrategy,
     logger,
+    preCollectedFiles,
   } = params;
 
   // Create a unique temporary directory
@@ -551,16 +924,19 @@ async function fetchAndConvertToolFiles(params: {
   try {
     // Collect files using rulesync feature paths (rules/, commands/, etc.)
     // External repos use these paths directly without tool-specific prefixes
-    const filesToFetch = await collectFeatureFiles({
-      client,
-      owner: parsed.owner,
-      repo: parsed.repo,
-      basePath: resolvedPath,
-      ref,
-      enabledFeatures,
-      semaphore,
-      logger,
-    });
+    const filesToFetch =
+      preCollectedFiles ??
+      (await collectFeatureFiles({
+        client,
+        owner: parsed.owner,
+        repo: parsed.repo,
+        basePath: resolvedPath,
+        ref,
+        enabledFeatures,
+        featureSelectors,
+        semaphore,
+        logger,
+      }));
 
     if (filesToFetch.length === 0) {
       logger.warn(`No files found matching enabled features: ${enabledFeatures.join(", ")}`);

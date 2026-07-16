@@ -1,6 +1,15 @@
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { resolveDisableModelInvocation, resolveUserInvocable } from "./skills-utils.js";
+import { RULESYNC_SKILLS_RELATIVE_DIR_PATH } from "../../constants/rulesync-paths.js";
+import { setupTestDirectory } from "../../test-utils/test-directories.js";
+import { ensureDir, writeFileContent } from "../../utils/file.js";
+import {
+  getLocalSkillDirEntries,
+  resolveDisableModelInvocation,
+  resolveUserInvocable,
+} from "./skills-utils.js";
 
 describe("resolveDisableModelInvocation", () => {
   it("returns the section value when it is set", () => {
@@ -93,5 +102,34 @@ describe("resolveUserInvocable", () => {
         section: undefined,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("getLocalSkillDirEntries", () => {
+  it("discovers nested local skills and skips .curated", async () => {
+    const { testDir, cleanup } = await setupTestDirectory();
+    try {
+      const localSkillDir = join(testDir, RULESYNC_SKILLS_RELATIVE_DIR_PATH, "core", "review");
+      const curatedSkillDir = join(
+        testDir,
+        RULESYNC_SKILLS_RELATIVE_DIR_PATH,
+        ".curated",
+        "remote-skill",
+      );
+      await ensureDir(localSkillDir);
+      await ensureDir(curatedSkillDir);
+      await writeFileContent(join(localSkillDir, "SKILL.md"), "local");
+      await writeFileContent(join(curatedSkillDir, "SKILL.md"), "curated");
+
+      const entries = await getLocalSkillDirEntries(testDir);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        relativeDirPath: join(".rulesync", "skills", "core"),
+        dirName: "review",
+        relativeSkillDirPath: "core/review",
+      });
+    } finally {
+      await cleanup();
+    }
   });
 });

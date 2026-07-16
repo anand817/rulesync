@@ -327,7 +327,7 @@ describe("installGh", () => {
     const localLogger = createMockLogger();
     const result = await installGh({
       projectRoot: testDir,
-      sources: [source({ source: "owner/repo", skills: ["wanted", "missing"] })],
+      sources: [source({ source: "owner/repo", skills: { paths: ["wanted", "missing"] } })],
       logger: localLogger,
     });
     expect(result.installedSkillCount).toBe(1);

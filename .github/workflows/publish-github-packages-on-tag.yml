@@ -1,0 +1,81 @@
+name: Publish GitHub Packages (Tag)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish to GitHub Packages from tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v2
+        with:
+          experimental: true
+
+      - name: Setup Takumi Guard npm registry
+        uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1
+
+      - name: Setup Node for GitHub Packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@anand817"
+
+      - name: Ensure GH_PACKAGES_TOKEN is configured
+        run: |
+          if [ -z "$GH_PACKAGES_TOKEN" ]; then
+            echo "::error::Missing required secret GH_PACKAGES_TOKEN"
+            exit 1
+          fi
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+
+      - name: Validate tag matches package version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${TAG#v}"
+
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - name: Install dependencies
+        run: pnpm install --ignore-scripts
+
+      - name: Skip if version already published
+        id: guard
+        run: |
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${PKG_NAME}@${PKG_VERSION} already exists in GitHub Packages. Skipping publish."
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+
+      - name: Publish package
+        if: steps.guard.outputs.already_published != 'true'
+        run: pnpm run publish:github
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}

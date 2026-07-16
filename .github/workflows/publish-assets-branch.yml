@@ -1,0 +1,171 @@
+name: Publish Assets (Branch Release)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to build/tag/release from (e.g., multilevel-handling)"
+        required: true
+        type: string
+      tag:
+        description: "Release tag to create/update (e.g., v9.8.1-multilevel.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-assets:
+    name: Build and upload assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release context
+        id: release
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            TAG="$REF_NAME"
+            TARGET_REF="$GITHUB_SHA"
+            VALIDATE_BRANCH="false"
+          else
+            TAG="$TAG_INPUT"
+            TARGET_REF="$BRANCH_INPUT"
+            VALIDATE_BRANCH="true"
+          fi
+
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Invalid tag format: $TAG"
+            exit 1
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "target_ref=$TARGET_REF"
+            echo "validate_branch=$VALIDATE_BRANCH"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          TAG_INPUT: ${{ inputs.tag }}
+          BRANCH_INPUT: ${{ inputs.branch }}
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ steps.release.outputs.target_ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configure git
+        uses: ./.github/actions/git-config
+
+      - name: Setup mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v2
+        with:
+          experimental: true
+
+      - name: Setup Takumi Guard npm registry
+        uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1
+
+      - name: Validate branch exists (manual runs only)
+        if: steps.release.outputs.validate_branch == 'true'
+        run: |
+          if ! git rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null; then
+            echo "::error::Branch not found on origin: $BRANCH"
+            exit 1
+          fi
+        env:
+          BRANCH: ${{ inputs.branch }}
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist-bun
+          bun build --compile --minify --sourcemap --target=bun-linux-x64 --outfile=dist-bun/rulesync-linux-x64 ./src/cli/index.ts
+          bun build --compile --minify --sourcemap --target=bun-linux-arm64 --outfile=dist-bun/rulesync-linux-arm64 ./src/cli/index.ts
+          bun build --compile --minify --sourcemap --target=bun-darwin-arm64 --outfile=dist-bun/rulesync-darwin-arm64 ./src/cli/index.ts
+          bun build --compile --minify --sourcemap --target=bun-darwin-x64 --outfile=dist-bun/rulesync-darwin-x64 ./src/cli/index.ts
+          bun build --compile --minify --sourcemap --target=bun-windows-x64 --outfile=dist-bun/rulesync-windows-x64.exe ./src/cli/index.ts
+
+      - name: Generate checksums
+        run: |
+          cd dist-bun
+          sha256sum rulesync-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate JSON Schemas
+        run: pnpm generate:schema
+
+      - name: Generate repomix XML variants
+        run: bun scripts/generate-repomix-xml.ts
+
+      - name: Bundle XML files into zip
+        run: zip repomix-xml.zip repomix-output-*.xml
+
+      - name: Create and push tag (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          CURRENT_SHA="$(git rev-parse HEAD)"
+
+          REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/$TAG^{}" "refs/tags/$TAG" \
+            | awk '$2 ~ /\^\{\}$/ {peeled=$1} $2 !~ /\^\{\}$/ {plain=$1} END {print (peeled ? peeled : plain)}')"
+          if [ -n "$REMOTE_SHA" ]; then
+            if [ "$REMOTE_SHA" != "$CURRENT_SHA" ]; then
+              echo "::error::Tag $TAG already exists on origin but points to $REMOTE_SHA instead of $CURRENT_SHA"
+              exit 1
+            fi
+            echo "Tag $TAG already exists on origin and points to current commit"
+            exit 0
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_SHA" != "$CURRENT_SHA" ]; then
+              echo "::error::Local tag $TAG points to $TAG_SHA instead of $CURRENT_SHA"
+              exit 1
+            fi
+            git push origin "$TAG"
+            echo "Existing local tag $TAG pushed"
+            exit 0
+          fi
+
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tag $TAG created and pushed"
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+
+      - name: Create or update release assets
+        run: |
+          ASSETS=(
+            "install.sh"
+            "dist-bun/rulesync-linux-x64"
+            "dist-bun/rulesync-linux-arm64"
+            "dist-bun/rulesync-darwin-arm64"
+            "dist-bun/rulesync-darwin-x64"
+            "dist-bun/rulesync-windows-x64.exe"
+            "dist-bun/SHA256SUMS"
+            "repomix-xml.zip"
+            "config-schema.json"
+            "permissions-schema.json"
+            "mcp-schema.json"
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            echo "Updated assets for existing release $TAG"
+          else
+            gh release create "$TAG" "${ASSETS[@]}" --draft --target "$TARGET_REF" --title "$TAG"
+            echo "Created draft release $TAG from target $TARGET_REF"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          TARGET_REF: ${{ steps.release.outputs.target_ref }}

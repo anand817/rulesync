@@ -9,7 +9,7 @@ import { ToolFile } from "../../types/tool-file.js";
 import { subagentsProcessorToolTargetTuple } from "../../types/tool-target-tuples.js";
 import type { ToolTarget } from "../../types/tool-targets.js";
 import { formatError } from "../../utils/error.js";
-import { directoryExists, findFilesByGlobs, listDirectoryFiles } from "../../utils/file.js";
+import { directoryExists, findFilesByGlobs } from "../../utils/file.js";
 import type { Logger } from "../../utils/logger.js";
 import { AgentsmdSubagent } from "./agentsmd-subagent.js";
 import { AugmentcodeSubagent } from "./augmentcode-subagent.js";
@@ -483,9 +483,9 @@ export class SubagentsProcessor extends FeatureProcessor {
       return [];
     }
 
-    // Read all markdown files from the directory
-    const entries = await listDirectoryFiles(subagentsDir);
-    const mdFiles = entries.filter((file) => file.endsWith(".md"));
+    // Read all markdown files recursively from the directory
+    const mdFilePaths = await findFilesByGlobs(join(subagentsDir, "**", "*.md"), { type: "file" });
+    const mdFiles = mdFilePaths.map((path) => relative(subagentsDir, path).replaceAll("\\", "/"));
 
     if (mdFiles.length === 0) {
       this.logger.debug(`No markdown files found in rulesync subagents directory: ${subagentsDir}`);

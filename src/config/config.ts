@@ -28,14 +28,30 @@ import { hasControlCharacters } from "../utils/validation.js";
 
 const GITIGNORE_DESTINATION_KEY = "gitignoreDestination";
 
+const SourceSelectorPathSchema = z.string().check(
+  minLength(1, "selector path must be a non-empty string"),
+  refine((v) => !v.includes(".."), 'selector path must not contain ".."'),
+  refine((v) => !isAbsolute(v), "selector path must not be absolute"),
+  refine((v) => !hasControlCharacters(v), "selector path must not contain control characters"),
+);
+
+const SourceFeatureSelectorSchema = z.object({
+  paths: optional(z.array(SourceSelectorPathSchema)),
+});
+export type SourceFeatureSelector = z.infer<typeof SourceFeatureSelectorSchema>;
+
 /**
  * Schema for a single source entry in the sources array.
- * Declares an external repository from which skills can be fetched.
+ * Declares an external repository from which rulesync features can be fetched.
  */
 const SourceEntrySchema = z.object({
   source: z.string().check(minLength(1, "source must be a non-empty string")),
-  skills: optional(z.array(z.string())),
+  rules: optional(SourceFeatureSelectorSchema),
+  commands: optional(SourceFeatureSelectorSchema),
+  subagents: optional(SourceFeatureSelectorSchema),
+  skills: optional(SourceFeatureSelectorSchema),
   transport: optional(z.enum(["github", "git"])),
+  gitProtocol: optional(z.enum(["ssh", "https"])),
   ref: optional(
     z.string().check(
       refine((v) => !v.startsWith("-"), 'ref must not start with "-"'),
@@ -78,7 +94,7 @@ export const ConfigParamsSchema = z.object({
   dryRun: optional(z.boolean()),
   check: optional(z.boolean()),
   inputRoot: optional(z.string()),
-  // Declarative skill sources
+  // Declarative source selectors
   sources: optional(z.array(SourceEntrySchema)),
 });
 // We override the inferred `targets` / `features` types with the hand-written

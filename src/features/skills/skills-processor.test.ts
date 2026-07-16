@@ -408,6 +408,27 @@ Content 2`;
       expect(names).toEqual(["skill-1", "skill-2"]);
     });
 
+    it("should load nested skill directories recursively", async () => {
+      const skillsDir = join(testDir, RULESYNC_SKILLS_RELATIVE_DIR_PATH);
+      const nestedSkillDir = join(skillsDir, "core", "review");
+      await ensureDir(nestedSkillDir);
+
+      await writeFileContent(
+        join(nestedSkillDir, "SKILL.md"),
+        `---
+name: review
+description: Nested review skill
+---
+Nested content`,
+      );
+
+      const rulesyncDirs = await processor.loadRulesyncDirs();
+      expect(rulesyncDirs).toHaveLength(1);
+      const skill = rulesyncDirs[0] as RulesyncSkill;
+      expect(skill.getDirName()).toBe("review");
+      expect(skill.getRelativeDirPath()).toBe(join(".rulesync", "skills", "core"));
+    });
+
     it("should throw error when invalid skill directory is found", async () => {
       const skillsDir = join(testDir, RULESYNC_SKILLS_RELATIVE_DIR_PATH);
       await ensureDir(skillsDir);
@@ -457,14 +478,14 @@ Linked skill content`,
       },
     );
 
-    it("should throw error when directory without SKILL.md file is found", async () => {
+    it("should ignore directories without SKILL.md file", async () => {
       const skillsDir = join(testDir, RULESYNC_SKILLS_RELATIVE_DIR_PATH);
       await ensureDir(skillsDir);
 
       const emptyDir = join(skillsDir, "empty-dir");
       await ensureDir(emptyDir);
 
-      await expect(processor.loadRulesyncDirs()).rejects.toThrow("SKILL.md not found in");
+      await expect(processor.loadRulesyncDirs()).resolves.toEqual([]);
     });
 
     it("should load rulesync dirs from cwd even when outputRoot is different (global mode)", async () => {

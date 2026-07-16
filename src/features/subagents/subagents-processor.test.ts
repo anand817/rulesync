@@ -514,6 +514,29 @@ Second agent content`;
       expect(names).toEqual(["agent-1", "agent-2"]);
     });
 
+    it("should load nested markdown subagent files recursively", async () => {
+      const subagentsDir = join(testDir, RULESYNC_SUBAGENTS_RELATIVE_DIR_PATH);
+      const nestedDir = join(subagentsDir, "core");
+      await ensureDir(nestedDir);
+
+      await writeFileContent(
+        join(nestedDir, "planner.md"),
+        `---
+name: planner
+description: Nested planner
+targets: ["*"]
+---
+Nested planner content`,
+      );
+
+      const rulesyncFiles = await processor.loadRulesyncFiles();
+      expect(rulesyncFiles).toHaveLength(1);
+      const planner = rulesyncFiles[0] as RulesyncSubagent;
+      expect(planner.getFrontmatter().name).toBe("planner");
+      expect(planner.getRelativeDirPath()).toBe(join(".rulesync", "subagents", "core"));
+      expect(planner.getRelativeFilePath()).toBe("planner.md");
+    });
+
     it("should skip invalid subagent files and continue loading valid ones", async () => {
       const subagentsDir = join(testDir, RULESYNC_SUBAGENTS_RELATIVE_DIR_PATH);
       await ensureDir(subagentsDir);

@@ -6,6 +6,7 @@ import { createMockLogger } from "../test-utils/mock-logger.js";
 import { setupTestDirectory } from "../test-utils/test-directories.js";
 import { ensureDir, fileExists, readFileContent, writeFileContent } from "../utils/file.js";
 import { fetchFiles, formatFetchSummary } from "./fetch.js";
+import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
 import { parseSource } from "./source-parser.js";
 
 const logger = createMockLogger();
@@ -36,6 +37,12 @@ vi.mock("./github-client.js", () => ({
       this.statusCode = statusCode;
     }
   },
+}));
+
+vi.mock("./git-client.js", () => ({
+  fetchRepositoryFiles: vi.fn(),
+  resolveDefaultRef: vi.fn(),
+  resolveRefToSha: vi.fn(),
 }));
 
 describe("parseSource", () => {
@@ -296,6 +303,9 @@ describe("fetchFiles", () => {
       listDirectory: vi.fn(),
       getFileContent: vi.fn(),
     };
+    vi.mocked(resolveDefaultRef).mockResolvedValue({ ref: "main", sha: "a".repeat(40) });
+    vi.mocked(resolveRefToSha).mockResolvedValue("a".repeat(40));
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -307,6 +317,71 @@ describe("fetchFiles", () => {
     await expect(
       fetchFiles({ logger, source: "gitlab:owner/repo", outputRoot: testDir }),
     ).rejects.toThrow("GitLab is not yet supported");
+  });
+
+  it("should fetch files via git transport using shorthand source", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: { transport: "git", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveDefaultRef).toHaveBeenCalledWith("git@github.com:owner/repo.git");
+    expect(resolveRefToSha).toHaveBeenCalledWith("git@github.com:owner/repo.git", "main");
+    expect(fetchRepositoryFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "git@github.com:owner/repo.git",
+        ref: "main",
+        basePath: ".rulesync",
+      }),
+    );
+    expect(summary.created).toBe(1);
+    expect(await fileExists(join(testDir, ".rulesync", "rules", "overview.md"))).toBe(true);
+  });
+
+  it("should honor https gitProtocol for canonical git transport", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: { transport: "git", gitProtocol: "https", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveDefaultRef).toHaveBeenCalledWith("https://github.com/owner/repo.git");
+    expect(resolveRefToSha).toHaveBeenCalledWith("https://github.com/owner/repo.git", "main");
+    expect(fetchRepositoryFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://github.com/owner/repo.git",
+        ref: "main",
+        basePath: ".rulesync",
+      }),
+    );
+    expect(summary.created).toBe(1);
+  });
+
+  it("should fetch files via git transport using ssh source URL", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "git@github.com:owner/repo.git",
+      options: { transport: "git", ref: "main", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveRefToSha).toHaveBeenCalledWith("git@github.com:owner/repo.git", "main");
+    expect(summary.created).toBe(1);
   });
 
   it("should fetch files from feature directories directly", async () => {
@@ -453,6 +528,75 @@ describe("fetchFiles", () => {
 
     expect(summary.files).toHaveLength(1);
     expect(summary.files[0]?.relativePath).toBe("rules/overview.md");
+  });
+
+  it("should filter rule files by directory/file selectors", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      (_owner: string, _repo: string, path: string) => {
+        if (path === "rules") {
+          return Promise.resolve([
+            {
+              name: "core",
+              path: "rules/core",
+              type: "dir",
+              sha: "a",
+              size: 0,
+              download_url: null,
+            },
+            {
+              name: "python",
+              path: "rules/python",
+              type: "dir",
+              sha: "b",
+              size: 0,
+              download_url: null,
+            },
+          ]);
+        }
+        if (path === "rules/core") {
+          return Promise.resolve([
+            {
+              name: "core-base.md",
+              path: "rules/core/core-base.md",
+              type: "file",
+              sha: "c",
+              size: 100,
+              download_url: "https://example.com",
+            },
+          ]);
+        }
+        if (path === "rules/python") {
+          return Promise.resolve([
+            {
+              name: "python-base.md",
+              path: "rules/python/python-base.md",
+              type: "file",
+              sha: "d",
+              size: 100,
+              download_url: "https://example.com",
+            },
+          ]);
+        }
+        const error = new Error("Not found");
+        Object.assign(error, { statusCode: 404 });
+        return Promise.reject(error);
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("content");
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: {
+        features: ["rules"],
+        rulesPaths: ["core"],
+        rulesFiles: ["core/core-base.md"],
+      },
+      outputRoot: testDir,
+    });
+
+    expect(summary.files).toHaveLength(1);
+    expect(summary.files[0]?.relativePath).toBe("rules/core/core-base.md");
   });
 
   it("should skip existing files with skip strategy", async () => {
@@ -648,6 +792,94 @@ describe("fetchFiles", () => {
 
     expect(summary.created).toBe(1);
     expect(summary.files[0]?.relativePath).toBe("rules/overview.md");
+  });
+
+  it("should use .rulesync as implicit fetch base path", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      (_owner: string, _repo: string, path: string) => {
+        if (path === ".rulesync/rules") {
+          return Promise.resolve([
+            {
+              name: "overview.md",
+              path: ".rulesync/rules/overview.md",
+              type: "file",
+              sha: "abc",
+              size: 100,
+              download_url: "https://example.com",
+            },
+          ]);
+        }
+        const error = new Error("Not found");
+        Object.assign(error, { statusCode: 404 });
+        return Promise.reject(error);
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("content");
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: { features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(summary.created).toBe(1);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      ".rulesync/rules",
+      "main",
+    );
+    expect(mockClientInstance.listDirectory).not.toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      "rules",
+      "main",
+    );
+  });
+
+  it("should not use implicit .rulesync base path when source path is explicit", async () => {
+    mockClientInstance.listDirectory.mockImplementation(
+      (_owner: string, _repo: string, path: string) => {
+        if (path === "catalog/rules") {
+          return Promise.resolve([
+            {
+              name: "overview.md",
+              path: "catalog/rules/overview.md",
+              type: "file",
+              sha: "abc",
+              size: 100,
+              download_url: "https://example.com",
+            },
+          ]);
+        }
+        const error = new Error("Not found");
+        Object.assign(error, { statusCode: 404 });
+        return Promise.reject(error);
+      },
+    );
+    mockClientInstance.getFileContent.mockResolvedValue("content");
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo:catalog",
+      options: { features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(summary.created).toBe(1);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      "catalog/rules",
+      "main",
+    );
+    expect(mockClientInstance.listDirectory).not.toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      ".rulesync/rules",
+      "main",
+    );
   });
 
   it.each([
@@ -1398,8 +1630,15 @@ Review the current changes and provide feedback.
     expect(summary.created).toBe(3);
     expect(summary.files).toHaveLength(3);
 
-    // Verify listDirectory was called only once for the shared basePath
-    expect(mockClientInstance.listDirectory).toHaveBeenCalledTimes(1);
+    // First call checks default .rulesync path, then falls back to root.
+    // Within each attempt, file-based features still share one cached listing.
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledTimes(2);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      ".rulesync",
+      "main",
+    );
     expect(mockClientInstance.listDirectory).toHaveBeenCalledWith("owner", "repo", ".", "main");
   });
 
@@ -1466,6 +1705,13 @@ Review the current changes and provide feedback.
     });
 
     // Verify separate API calls were made for different base paths
+    // (plus one initial implicit-default attempt for the root fetch).
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      ".rulesync",
+      "main",
+    );
     expect(mockClientInstance.listDirectory).toHaveBeenCalledWith("owner", "repo", ".", "main");
     expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
       "owner",
@@ -1473,7 +1719,7 @@ Review the current changes and provide feedback.
       "subdir",
       "main",
     );
-    expect(mockClientInstance.listDirectory).toHaveBeenCalledTimes(2);
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledTimes(3);
   });
 });
 

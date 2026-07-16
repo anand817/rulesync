@@ -32,11 +32,11 @@ export const RULESYNC_PERMISSIONS_FILE_NAME = "permissions.json";
 
 // JSON Schema URLs (published as GitHub release assets)
 export const RULESYNC_CONFIG_SCHEMA_URL =
-  "https://github.com/dyoshikawa/rulesync/releases/latest/download/config-schema.json";
+  "https://github.com/anand817/rulesync/releases/latest/download/config-schema.json";
 export const RULESYNC_MCP_SCHEMA_URL =
-  "https://github.com/dyoshikawa/rulesync/releases/latest/download/mcp-schema.json";
+  "https://github.com/anand817/rulesync/releases/latest/download/mcp-schema.json";
 export const RULESYNC_PERMISSIONS_SCHEMA_URL =
-  "https://github.com/dyoshikawa/rulesync/releases/latest/download/permissions-schema.json";
+  "https://github.com/anand817/rulesync/releases/latest/download/permissions-schema.json";
 
 // Size limits
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB

@@ -1,4 +1,5 @@
 import { fetchFiles, formatFetchSummary } from "../../lib/fetch.js";
+import { GitClientError } from "../../lib/git-client.js";
 import { GitHubClientError } from "../../lib/github-client.js";
 import type { FetchOptions } from "../../types/fetch.js";
 import { CLIError, ErrorCodes } from "../../types/json-output.js";
@@ -10,13 +11,17 @@ export type FetchCommandOptions = FetchOptions & {
 
 export async function fetchCommand(logger: Logger, options: FetchCommandOptions): Promise<void> {
   const { source, ...fetchOptions } = options;
+  const normalizedFetchOptions: FetchOptions = {
+    ...fetchOptions,
+    transport: fetchOptions.transport ?? "git",
+  };
 
   logger.debug(`Fetching files from ${source}...`);
 
   try {
     const summary = await fetchFiles({
       source,
-      options: fetchOptions,
+      options: normalizedFetchOptions,
       logger,
     });
 
@@ -33,7 +38,7 @@ export async function fetchCommand(logger: Logger, options: FetchCommandOptions)
         .map((f) => f.relativePath);
 
       logger.captureData("source", source);
-      logger.captureData("path", fetchOptions.path);
+      logger.captureData("path", normalizedFetchOptions.path);
       logger.captureData("created", createdFiles);
       logger.captureData("overwritten", overwrittenFiles);
       logger.captureData("skipped", skippedFiles);
@@ -56,6 +61,12 @@ export async function fetchCommand(logger: Logger, options: FetchCommandOptions)
           ? " Tip: Set GITHUB_TOKEN or GH_TOKEN environment variable, or use `GITHUB_TOKEN=$(gh auth token) rulesync fetch ...`"
           : "";
       throw new CLIError(`GitHub API Error: ${error.message}.${authHint}`, ErrorCodes.FETCH_FAILED);
+    }
+    if (error instanceof GitClientError) {
+      throw new CLIError(
+        `Git transport error: ${error.message}. Tip: Ensure git is installed and your SSH/git credentials are configured.`,
+        ErrorCodes.FETCH_FAILED,
+      );
     }
     throw error;
   }

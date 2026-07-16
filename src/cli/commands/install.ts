@@ -84,14 +84,17 @@ async function runRulesyncInstall(logger: Logger, options: InstallCommandOptions
   if (logger.jsonMode) {
     logger.captureData("sourcesProcessed", result.sourcesProcessed);
     logger.captureData("skillsFetched", result.fetchedSkillCount);
+    logger.captureData("filesFetched", result.fetchedFileCount);
   }
 
-  if (result.fetchedSkillCount > 0) {
+  if (result.fetchedSkillCount > 0 || result.fetchedFileCount > 0) {
     logger.success(
-      `Installed ${result.fetchedSkillCount} skill(s) from ${result.sourcesProcessed} source(s).`,
+      `Installed ${result.fetchedSkillCount} skill(s) and ${result.fetchedFileCount} file(s) from ${result.sourcesProcessed} source(s).`,
     );
   } else {
-    logger.success(`All skills up to date (${result.sourcesProcessed} source(s) checked).`);
+    logger.success(
+      `All sourced content up to date (${result.sourcesProcessed} source(s) checked).`,
+    );
   }
 }
 

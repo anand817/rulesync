@@ -605,13 +605,13 @@ function selectSkills(params: {
   logger: Logger;
 }): Array<{ name: string; path: string }> {
   const { validatedSkills, entry, sourceKey, logger } = params;
-  if (!entry.skills || entry.skills.length === 0) {
+  if (!entry.skills || !entry.skills.paths || entry.skills.paths.length === 0) {
     return validatedSkills;
   }
-  const requested = new Set(entry.skills);
+  const requested = new Set(entry.skills.paths.map((path) => path.replaceAll("\\", "/")));
   const selected = validatedSkills.filter((s) => requested.has(s.name));
   const presentNames = new Set(validatedSkills.map((s) => s.name));
-  for (const want of entry.skills) {
+  for (const want of requested) {
     if (!presentNames.has(want)) {
       logger.warn(`Requested skill "${want}" not found in ${sourceKey} under skills/. Skipping.`);
     }

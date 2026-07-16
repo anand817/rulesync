@@ -41,6 +41,7 @@ describe("installCommand", () => {
       vi.mocked(ConfigResolver.resolve).mockResolvedValue(createMockConfig(sources));
       vi.mocked(resolveAndFetchSources).mockResolvedValue({
         fetchedSkillCount: 3,
+        fetchedFileCount: 0,
         sourcesProcessed: 1,
       });
 
@@ -57,7 +58,9 @@ describe("installCommand", () => {
           },
         }),
       );
-      expect(mockLogger.success).toHaveBeenCalledWith("Installed 3 skill(s) from 1 source(s).");
+      expect(mockLogger.success).toHaveBeenCalledWith(
+        "Installed 3 skill(s) and 0 file(s) from 1 source(s).",
+      );
     });
 
     it("should report all up to date when no skills fetched", async () => {
@@ -65,13 +68,14 @@ describe("installCommand", () => {
       vi.mocked(ConfigResolver.resolve).mockResolvedValue(createMockConfig(sources));
       vi.mocked(resolveAndFetchSources).mockResolvedValue({
         fetchedSkillCount: 0,
+        fetchedFileCount: 0,
         sourcesProcessed: 1,
       });
 
       await installCommand(mockLogger, {});
 
       expect(mockLogger.success).toHaveBeenCalledWith(
-        "All skills up to date (1 source(s) checked).",
+        "All sourced content up to date (1 source(s) checked).",
       );
     });
 
@@ -114,6 +118,7 @@ describe("installCommand", () => {
       vi.mocked(ConfigResolver.resolve).mockResolvedValue(createMockConfig(sources));
       vi.mocked(resolveAndFetchSources).mockResolvedValue({
         fetchedSkillCount: 0,
+        fetchedFileCount: 0,
         sourcesProcessed: 1,
       });
 
@@ -131,6 +136,7 @@ describe("installCommand", () => {
       vi.mocked(ConfigResolver.resolve).mockResolvedValue(createMockConfig(sources));
       vi.mocked(resolveAndFetchSources).mockResolvedValue({
         fetchedSkillCount: 0,
+        fetchedFileCount: 0,
         sourcesProcessed: 1,
       });
 
@@ -148,6 +154,7 @@ describe("installCommand", () => {
       vi.mocked(ConfigResolver.resolve).mockResolvedValue(createMockConfig(sources));
       vi.mocked(resolveAndFetchSources).mockResolvedValue({
         fetchedSkillCount: 0,
+        fetchedFileCount: 0,
         sourcesProcessed: 1,
       });
 

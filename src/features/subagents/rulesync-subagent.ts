@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { z } from "zod/mini";
 
@@ -153,10 +153,15 @@ export class RulesyncSubagent extends RulesyncFile {
     }
 
     const filename = basename(relativeFilePath);
+    const relativePathDir = dirname(relativeFilePath);
+    const relativeDirPath =
+      relativePathDir === "."
+        ? this.getSettablePaths().relativeDirPath
+        : join(this.getSettablePaths().relativeDirPath, relativePathDir);
 
     return new RulesyncSubagent({
       outputRoot,
-      relativeDirPath: this.getSettablePaths().relativeDirPath,
+      relativeDirPath,
       relativeFilePath: filename,
       frontmatter: result.data,
       body: content.trim(),
