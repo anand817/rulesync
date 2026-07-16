@@ -39,8 +39,8 @@ import {
   writeFileContent,
 } from "../utils/file.js";
 import type { Logger } from "../utils/logger.js";
-import { GitHubClient, GitHubClientError } from "./github-client.js";
 import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
+import { GitHubClient, GitHubClientError } from "./github-client.js";
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
 import { resolveGitUrlFromSource } from "./source-git-url.js";
 import { parseSource } from "./source-parser.js";
@@ -67,7 +67,9 @@ type FeatureSelector = {
 type FeatureSelectorMap = Partial<Record<Feature, FeatureSelector>>;
 
 function normalizeSelectorPath(path: string): string {
-  return toPosixPath(path).replace(/^\.\/+/, "").replace(/\/+$/, "");
+  return toPosixPath(path)
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
 }
 
 function normalizeRelativePath(path: string): string {
@@ -302,15 +304,17 @@ async function fetchFilesViaGit(params: {
     allowRawGitUrl: true,
   });
   const hasExplicitPath = options.path !== undefined || parsedSource?.path !== undefined;
-  const resolvedPath = toPosixPath(options.path ?? parsedSource?.path ?? RULESYNC_RELATIVE_DIR_PATH);
+  const resolvedPath = toPosixPath(
+    options.path ?? parsedSource?.path ?? RULESYNC_RELATIVE_DIR_PATH,
+  );
 
   const requestedRef = options.ref ?? parsedSource?.ref;
   const ref = requestedRef ?? (await resolveDefaultRef(gitUrl)).ref;
   const resolvedSha = /^[0-9a-f]{40}$/i.test(ref) ? ref : await resolveRefToSha(gitUrl, ref);
 
-  async function collectFilesFromBasePath(basePath: string): Promise<
-    Array<{ relativePath: string; content: string; size: number }>
-  > {
+  async function collectFilesFromBasePath(
+    basePath: string,
+  ): Promise<Array<{ relativePath: string; content: string; size: number }>> {
     const repositoryFiles = await fetchRepositoryFiles({
       url: gitUrl,
       ref,
@@ -338,9 +342,12 @@ async function fetchFilesViaGit(params: {
   }
 
   let filesToFetch = await collectFilesFromBasePath(resolvedPath);
-  const shouldTryLegacyRootFallback = !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
+  const shouldTryLegacyRootFallback =
+    !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
   if (filesToFetch.length === 0 && shouldTryLegacyRootFallback) {
-    logger.debug('No files found under default ".rulesync" base path, retrying fetch from repository root.');
+    logger.debug(
+      'No files found under default ".rulesync" base path, retrying fetch from repository root.',
+    );
     filesToFetch = await collectFilesFromBasePath(".");
   }
 
@@ -532,9 +539,9 @@ export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
   const ref = resolvedRef ?? (await client.getDefaultBranch(parsed.owner, parsed.repo));
   logger.debug(`Using ref: ${ref}`);
 
-  async function collectFilesFromBasePath(basePath: string): Promise<
-    Array<{ remotePath: string; relativePath: string; size: number }>
-  > {
+  async function collectFilesFromBasePath(
+    basePath: string,
+  ): Promise<Array<{ remotePath: string; relativePath: string; size: number }>> {
     const semaphore = new Semaphore(FETCH_CONCURRENCY_LIMIT);
     return collectFeatureFiles({
       client,
@@ -549,7 +556,8 @@ export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
     });
   }
 
-  const shouldTryLegacyRootFallback = !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
+  const shouldTryLegacyRootFallback =
+    !hasExplicitPath && resolvedPath === RULESYNC_RELATIVE_DIR_PATH;
 
   // If target is a tool format, use conversion flow
   if (isToolTarget(target)) {
@@ -581,7 +589,9 @@ export async function fetchFiles(params: FetchParams): Promise<FetchSummary> {
   // Collect all files to fetch from feature directories directly
   let filesToFetch = await collectFilesFromBasePath(resolvedPath);
   if (filesToFetch.length === 0 && shouldTryLegacyRootFallback) {
-    logger.debug('No files found under default ".rulesync" base path, retrying fetch from repository root.');
+    logger.debug(
+      'No files found under default ".rulesync" base path, retrying fetch from repository root.',
+    );
     filesToFetch = await collectFilesFromBasePath(".");
   }
 
@@ -663,8 +673,17 @@ async function collectFeatureFiles(params: {
   semaphore: Semaphore;
   logger: Logger;
 }): Promise<Array<{ remotePath: string; relativePath: string; size: number }>> {
-  const { client, owner, repo, basePath, ref, enabledFeatures, featureSelectors, semaphore, logger } =
-    params;
+  const {
+    client,
+    owner,
+    repo,
+    basePath,
+    ref,
+    enabledFeatures,
+    featureSelectors,
+    semaphore,
+    logger,
+  } = params;
 
   // Cache directory listing results to avoid duplicate API calls
   // File-based features (ignore, mcp, hooks) all list the same basePath directory

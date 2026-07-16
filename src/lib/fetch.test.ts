@@ -830,7 +830,12 @@ describe("fetchFiles", () => {
       ".rulesync/rules",
       "main",
     );
-    expect(mockClientInstance.listDirectory).not.toHaveBeenCalledWith("owner", "repo", "rules", "main");
+    expect(mockClientInstance.listDirectory).not.toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      "rules",
+      "main",
+    );
   });
 
   it("should not use implicit .rulesync base path when source path is explicit", async () => {
@@ -863,7 +868,12 @@ describe("fetchFiles", () => {
     });
 
     expect(summary.created).toBe(1);
-    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith("owner", "repo", "catalog/rules", "main");
+    expect(mockClientInstance.listDirectory).toHaveBeenCalledWith(
+      "owner",
+      "repo",
+      "catalog/rules",
+      "main",
+    );
     expect(mockClientInstance.listDirectory).not.toHaveBeenCalledWith(
       "owner",
       "repo",

@@ -64,17 +64,17 @@ Add a `sources` array to your `rulesync.jsonc`:
 
 Each entry in `sources` accepts:
 
-| Property    | Type       | Description                                                                                                                                                                                                           |
-| ----------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`    | `string`   | Repository source. Supports canonical (`owner/repo`, `owner/repo@ref:path`) and URL/scp/file formats (for `transport: "git"`).                                                                                    |
-| `rules`     | `object`   | Optional selector for `rules/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                                         |
-| `commands`  | `object`   | Optional selector for `commands/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                                      |
-| `subagents` | `object`   | Optional selector for `subagents/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                                     |
-| `skills`    | `object`   | Optional selector for `skills/` with `{ paths?: string[] }`. Install fetches skills only when this selector is present and has explicit `paths`.                                                                    |
-| `transport` | `string`   | `"github"` (default) uses the GitHub REST API. `"git"` uses git CLI and accepts canonical or raw git URLs.                                                                                                         |
-| `gitProtocol` | `string` | Optional when `transport: "git"`. `"ssh"` (default) generates `git@github.com:owner/repo.git`; `"https"` generates `https://github.com/owner/repo.git`.                                                         |
-| `ref`       | `string`   | Branch, tag, or ref to fetch from. Defaults to the remote's default branch. For GitHub transport, use the `@ref` source syntax.                                                                                       |
-| `path`      | `string`   | Path to the feature directory root in the repository. Defaults to `.rulesync` (so features are read from `.rulesync/rules`, `.rulesync/skills`, etc.). For GitHub transport, use the `:path` source syntax.                |
+| Property      | Type     | Description                                                                                                                                                                                                 |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`      | `string` | Repository source. Supports canonical (`owner/repo`, `owner/repo@ref:path`) and URL/scp/file formats (for `transport: "git"`).                                                                              |
+| `rules`       | `object` | Optional selector for `rules/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                                  |
+| `commands`    | `object` | Optional selector for `commands/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                               |
+| `subagents`   | `object` | Optional selector for `subagents/` with `{ paths?: string[] }`. `paths` entries can be directory prefixes or exact file paths.                                                                              |
+| `skills`      | `object` | Optional selector for `skills/` with `{ paths?: string[] }`. Install fetches skills only when this selector is present and has explicit `paths`.                                                            |
+| `transport`   | `string` | `"github"` (default) uses the GitHub REST API. `"git"` uses git CLI and accepts canonical or raw git URLs.                                                                                                  |
+| `gitProtocol` | `string` | Optional when `transport: "git"`. `"ssh"` (default) generates `git@github.com:owner/repo.git`; `"https"` generates `https://github.com/owner/repo.git`.                                                     |
+| `ref`         | `string` | Branch, tag, or ref to fetch from. Defaults to the remote's default branch. For GitHub transport, use the `@ref` source syntax.                                                                             |
+| `path`        | `string` | Path to the feature directory root in the repository. Defaults to `.rulesync` (so features are read from `.rulesync/rules`, `.rulesync/skills`, etc.). For GitHub transport, use the `:path` source syntax. |
 
 > **Repository-root paths (`path: "."`):** When `path` is `""`, `"."`, or `"./"` (with the `git` transport), rulesync disables sparse-checkout and fetches the **entire** repository tree, then groups each top-level directory as a skill. This is useful for single-skill repositories whose `SKILL.md` lives at the repo root (`<repo>/SKILL.md`) rather than under a `skills/` container. Because the whole tree is fetched, prefer a narrower `path` for large repositories; the fetch is still bounded by rulesync's file-count, total-size, and depth limits.
 
@@ -131,7 +131,7 @@ Per-source field support in `--mode gh`:
 | Field       | Status                                                                                                                                       |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source`    | Required. Canonical GitHub source only (`owner/repo`, `owner/repo@ref`, `owner/repo:path`, `owner/repo@ref:path`).                           |
-| `skills`    | Optional. Uses selector shape `{ paths?: string[] }`. In gh mode `skills.paths` is used for skill-name selection.                                 |
+| `skills`    | Optional. Uses selector shape `{ paths?: string[] }`. In gh mode `skills.paths` is used for skill-name selection.                            |
 | `ref`       | Optional. Pins a tag, branch, or commit SHA. When omitted, gh mode resolves to the latest release's tag, falling back to the default branch. |
 | `agent`     | Optional. Defaults to `github-copilot`. See the agent table above.                                                                           |
 | `scope`     | Optional. Defaults to `project`.                                                                                                             |

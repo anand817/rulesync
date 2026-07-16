@@ -306,7 +306,9 @@ describe("resolveAndFetchSources", () => {
 
     const result = await resolveAndFetchSources({
       logger,
-      sources: [{ source: "https://github.com/org/repo", path: "catalog", skills: { paths: ["*"] } }],
+      sources: [
+        { source: "https://github.com/org/repo", path: "catalog", skills: { paths: ["*"] } },
+      ],
       projectRoot: testDir,
     });
 
@@ -435,10 +437,14 @@ describe("resolveAndFetchSources", () => {
           ];
         }
         if (path === ".rulesync/rules/core") {
-          return [{ name: "base.md", path: ".rulesync/rules/core/base.md", type: "file", size: 40 }];
+          return [
+            { name: "base.md", path: ".rulesync/rules/core/base.md", type: "file", size: 40 },
+          ];
         }
         if (path === ".rulesync/rules/python") {
-          return [{ name: "base.md", path: ".rulesync/rules/python/base.md", type: "file", size: 40 }];
+          return [
+            { name: "base.md", path: ".rulesync/rules/python/base.md", type: "file", size: 40 },
+          ];
         }
         return [];
       },
@@ -539,7 +545,9 @@ describe("resolveAndFetchSources", () => {
           return [{ name: "core", path: ".rulesync/rules/core", type: "dir" }];
         }
         if (path === ".rulesync/rules/core") {
-          return [{ name: "base.md", path: ".rulesync/rules/core/base.md", type: "file", size: 40 }];
+          return [
+            { name: "base.md", path: ".rulesync/rules/core/base.md", type: "file", size: 40 },
+          ];
         }
         if (path.includes("commands") || path.includes("subagents")) {
           throw new Error("undeclared entities should not be fetched");
@@ -1047,7 +1055,13 @@ describe("resolveAndFetchSources", () => {
     await resolveAndFetchSources({
       logger,
       sources: [
-        { source: "file:///local/clone", transport: "git", ref: "develop", path: "exports", skills: { paths: ["*"] } },
+        {
+          source: "file:///local/clone",
+          transport: "git",
+          ref: "develop",
+          path: "exports",
+          skills: { paths: ["*"] },
+        },
       ],
       projectRoot: testDir,
     });

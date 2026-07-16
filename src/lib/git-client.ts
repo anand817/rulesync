@@ -235,16 +235,7 @@ export async function fetchRepositoryFiles(params: {
   try {
     await execFileAsync(
       "git",
-      [
-        "clone",
-        "--depth",
-        "1",
-        "--no-checkout",
-        "--filter=blob:none",
-        "--",
-        url,
-        tmpDir,
-      ],
+      ["clone", "--depth", "1", "--no-checkout", "--filter=blob:none", "--", url, tmpDir],
       { timeout: GIT_TIMEOUT_MS },
     );
 
@@ -265,13 +256,9 @@ export async function fetchRepositoryFiles(params: {
         timeout: GIT_TIMEOUT_MS,
       });
     } else {
-      await execFileAsync(
-        "git",
-        ["-C", tmpDir, "sparse-checkout", "set", "--", checkoutBasePath],
-        {
-          timeout: GIT_TIMEOUT_MS,
-        },
-      );
+      await execFileAsync("git", ["-C", tmpDir, "sparse-checkout", "set", "--", checkoutBasePath], {
+        timeout: GIT_TIMEOUT_MS,
+      });
       await execFileAsync("git", ["-C", tmpDir, "checkout"], { timeout: GIT_TIMEOUT_MS });
     }
 

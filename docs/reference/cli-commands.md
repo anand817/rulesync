@@ -185,24 +185,24 @@ rulesync fetch owner/repo@ref:path   # Both ref and path
 
 ### Options
 
-| Option                  | Description                                                                                | Default                          |
-| ----------------------- | ------------------------------------------------------------------------------------------ | -------------------------------- |
-| `--target, -t <target>` | Target format to interpret files as (e.g., 'rulesync', 'claudecode')                       | `rulesync`                       |
-| `--features <features>` | Comma-separated features to fetch (rules, commands, subagents, skills, ignore, mcp, hooks) | `*` (all)                        |
-| `--output <dir>`        | Output directory relative to project root                                                  | `.rulesync`                      |
-| `--conflict <strategy>` | Conflict resolution: `overwrite` or `skip`                                                 | `overwrite`                      |
-| `--ref <ref>`           | Git ref (branch/tag/commit) to fetch from                                                  | Default branch                   |
-| `--path <path>`         | Subdirectory in the repository                                                             | `.rulesync`                      |
-| `--rules-paths <paths>` | Comma-separated rule directory prefixes relative to `rules/`                              | unset (all)                      |
-| `--rules-files <files>` | Comma-separated rule file paths relative to `rules/`                                       | unset (all)                      |
-| `--commands-paths <paths>` | Comma-separated command directory prefixes relative to `commands/`                      | unset (all)                      |
-| `--commands-files <files>` | Comma-separated command file paths relative to `commands/`                              | unset (all)                      |
-| `--subagents-paths <paths>` | Comma-separated subagent directory prefixes relative to `subagents/`                  | unset (all)                      |
-| `--subagents-files <files>` | Comma-separated subagent file paths relative to `subagents/`                          | unset (all)                      |
-| `--skills-paths <paths>` | Comma-separated skill directory prefixes relative to `skills/`                            | unset (all)                      |
-| `--skills-files <files>` | Comma-separated skill file paths relative to `skills/`                                    | unset (all)                      |
-| `--transport <mode>`    | Fetch transport: `github` (REST API) or `git` (git CLI via SSH/credential helper)         | `github`                         |
-| `--token <token>`       | Git provider token for private repositories (`github` transport)                           | `GITHUB_TOKEN` or `GH_TOKEN` env |
+| Option                      | Description                                                                                | Default                          |
+| --------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------- |
+| `--target, -t <target>`     | Target format to interpret files as (e.g., 'rulesync', 'claudecode')                       | `rulesync`                       |
+| `--features <features>`     | Comma-separated features to fetch (rules, commands, subagents, skills, ignore, mcp, hooks) | `*` (all)                        |
+| `--output <dir>`            | Output directory relative to project root                                                  | `.rulesync`                      |
+| `--conflict <strategy>`     | Conflict resolution: `overwrite` or `skip`                                                 | `overwrite`                      |
+| `--ref <ref>`               | Git ref (branch/tag/commit) to fetch from                                                  | Default branch                   |
+| `--path <path>`             | Subdirectory in the repository                                                             | `.rulesync`                      |
+| `--rules-paths <paths>`     | Comma-separated rule directory prefixes relative to `rules/`                               | unset (all)                      |
+| `--rules-files <files>`     | Comma-separated rule file paths relative to `rules/`                                       | unset (all)                      |
+| `--commands-paths <paths>`  | Comma-separated command directory prefixes relative to `commands/`                         | unset (all)                      |
+| `--commands-files <files>`  | Comma-separated command file paths relative to `commands/`                                 | unset (all)                      |
+| `--subagents-paths <paths>` | Comma-separated subagent directory prefixes relative to `subagents/`                       | unset (all)                      |
+| `--subagents-files <files>` | Comma-separated subagent file paths relative to `subagents/`                               | unset (all)                      |
+| `--skills-paths <paths>`    | Comma-separated skill directory prefixes relative to `skills/`                             | unset (all)                      |
+| `--skills-files <files>`    | Comma-separated skill file paths relative to `skills/`                                     | unset (all)                      |
+| `--transport <mode>`        | Fetch transport: `github` (REST API) or `git` (git CLI via SSH/credential helper)          | `github`                         |
+| `--token <token>`           | Git provider token for private repositories (`github` transport)                           | `GITHUB_TOKEN` or `GH_TOKEN` env |
 
 ### Examples
 

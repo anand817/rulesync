@@ -198,9 +198,9 @@ describe("fetchCommand", () => {
     it("should handle GitClientError with ssh/git hint", async () => {
       vi.mocked(fetchFiles).mockRejectedValue(new GitClientError("Authentication failed"));
 
-      await expect(fetchCommand(mockLogger, { source: "owner/repo", transport: "git" })).rejects.toThrow(
-        "Git transport error: Authentication failed",
-      );
+      await expect(
+        fetchCommand(mockLogger, { source: "owner/repo", transport: "git" }),
+      ).rejects.toThrow("Git transport error: Authentication failed");
     });
   });
 });

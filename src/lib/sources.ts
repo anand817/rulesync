@@ -11,7 +11,6 @@ import {
   RULESYNC_CURATED_SKILLS_RELATIVE_DIR_PATH,
 } from "../constants/rulesync-paths.js";
 import { getLocalSkillDirNames } from "../features/skills/skills-utils.js";
-import { fetchFiles } from "./fetch.js";
 import type { FetchOptions } from "../types/fetch.js";
 import type { GitHubFileEntry, ParsedSource } from "../types/fetch.js";
 import { formatError } from "../utils/error.js";
@@ -22,6 +21,7 @@ import {
   writeFileContent,
 } from "../utils/file.js";
 import type { Logger } from "../utils/logger.js";
+import { fetchFiles } from "./fetch.js";
 import {
   GitClientError,
   fetchSkillFiles,
@@ -31,10 +31,8 @@ import {
 } from "./git-client.js";
 import { GitHubClient, GitHubClientError, logGitHubAuthHints } from "./github-client.js";
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
+import { resolveGitUrlFromSource } from "./source-git-url.js";
 import { parseSource } from "./source-parser.js";
-import {
-  resolveGitUrlFromSource,
-} from "./source-git-url.js";
 import {
   type LockedSkill,
   type LockedSource,
@@ -72,7 +70,10 @@ type RemoteSkillFile = {
 };
 
 function normalizeRelativeSelectorPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+  return path
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
 }
 
 function normalizeRepositoryBasePath(path: string | undefined): string {
@@ -651,7 +652,9 @@ async function fetchSelectedNonSkillFeatures(params: {
   let fetchedFileCount = 0;
   for (const { feature, paths } of selectors) {
     if (paths.length === 0) {
-      logger.debug(`Skipping ${feature} fetch for ${sourceEntry.source}: selector has no explicit paths.`);
+      logger.debug(
+        `Skipping ${feature} fetch for ${sourceEntry.source}: selector has no explicit paths.`,
+      );
       continue;
     }
 
@@ -951,7 +954,8 @@ async function discoverGithubSkillDirs(params: {
 
     const requestedSkillName = getRequestedSkillNameForFallback(skillSelectors);
     const hasRequestedSkillDir =
-      requestedSkillName !== undefined && remoteSkillDirs.some((d) => d.name === requestedSkillName);
+      requestedSkillName !== undefined &&
+      remoteSkillDirs.some((d) => d.name === requestedSkillName);
     // Detect a root-level SKILL.md from the directory listing we already have, so
     // the fallback (and its full root-file fetch) is skipped when there is no
     // root skill to install — not just when the requested dir is absent.
@@ -1044,9 +1048,7 @@ async function fetchSource(params: {
   const skillSelectors = getSelectorPaths(sourceEntry.skills);
 
   if (skillSelectors.length === 0) {
-    logger.debug(
-      `Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`,
-    );
+    logger.debug(`Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`);
     return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
   }
 
@@ -1203,9 +1205,7 @@ async function fetchSourceViaGit(params: {
   const skillSelectors = getSelectorPaths(sourceEntry.skills);
 
   if (skillSelectors.length === 0) {
-    logger.debug(
-      `Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`,
-    );
+    logger.debug(`Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`);
     return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
   }
 

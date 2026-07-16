@@ -1,5 +1,4 @@
 import type { ParsedSource } from "../types/fetch.js";
-
 import { parseSource } from "./source-parser.js";
 
 export type GitProtocol = "ssh" | "https";
