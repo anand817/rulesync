@@ -37,7 +37,6 @@ const SourceSelectorPathSchema = z.string().check(
 
 const SourceFeatureSelectorSchema = z.object({
   paths: optional(z.array(SourceSelectorPathSchema)),
-  files: optional(z.array(SourceSelectorPathSchema)),
 });
 export type SourceFeatureSelector = z.infer<typeof SourceFeatureSelectorSchema>;
 
@@ -52,6 +51,7 @@ const SourceEntrySchema = z.object({
   subagents: optional(SourceFeatureSelectorSchema),
   skills: optional(SourceFeatureSelectorSchema),
   transport: optional(z.enum(["github", "git"])),
+  gitProtocol: optional(z.enum(["ssh", "https"])),
   ref: optional(
     z.string().check(
       refine((v) => !v.startsWith("-"), 'ref must not start with "-"'),

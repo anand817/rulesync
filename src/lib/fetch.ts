@@ -42,6 +42,7 @@ import type { Logger } from "../utils/logger.js";
 import { GitHubClient, GitHubClientError } from "./github-client.js";
 import { fetchRepositoryFiles, resolveDefaultRef, resolveRefToSha } from "./git-client.js";
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
+import { resolveGitUrlFromSource } from "./source-git-url.js";
 import { parseSource } from "./source-parser.js";
 
 /**
@@ -273,22 +274,6 @@ function matchesFeaturePath(relativePath: string, featurePath: string): boolean 
   return relativePath === featurePath || relativePath.startsWith(`${featurePath}/`);
 }
 
-function toGitUrlFromSource(source: string): { gitUrl: string; parsedSource?: ParsedSource } {
-  try {
-    const parsed = parseSource(source);
-    if (parsed.provider === "github") {
-      return { gitUrl: `git@github.com:${parsed.owner}/${parsed.repo}.git`, parsedSource: parsed };
-    }
-    if (parsed.provider === "gitlab") {
-      return { gitUrl: `git@gitlab.com:${parsed.owner}/${parsed.repo}.git`, parsedSource: parsed };
-    }
-  } catch {
-    // Source may already be a full git URL (e.g. git@host:org/repo.git or ssh://...).
-    return { gitUrl: source };
-  }
-  throw new Error(`Unsupported source for git transport: ${source}`);
-}
-
 async function fetchFilesViaGit(params: {
   source: string;
   options: FetchOptions;
@@ -311,7 +296,11 @@ async function fetchFilesViaGit(params: {
     target,
     logger,
   } = params;
-  const { gitUrl, parsedSource } = toGitUrlFromSource(source);
+  const { gitUrl, parsedSource } = resolveGitUrlFromSource({
+    source,
+    gitProtocol: options.gitProtocol,
+    allowRawGitUrl: true,
+  });
   const hasExplicitPath = options.path !== undefined || parsedSource?.path !== undefined;
   const resolvedPath = toPosixPath(options.path ?? parsedSource?.path ?? RULESYNC_RELATIVE_DIR_PATH);
 

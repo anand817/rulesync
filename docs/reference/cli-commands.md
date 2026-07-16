@@ -42,6 +42,12 @@ rulesync generate --input-root ~/.aiglobal --targets "*" --features rules
 
 # Install skills from declarative sources in rulesync.jsonc
 rulesync install
+# Selector semantics:
+# - If a source entry declares selectors, install fetches only those entities.
+# - If a source entry declares no selectors, install fetches nothing.
+# - Empty selectors (e.g. `skills: {}`) fetch nothing.
+# - Wildcards are used only when explicitly declared, e.g. `skills: { paths: ["*"] }`.
+# - Declarative source selectors support `paths` only (directory prefixes or exact file paths).
 
 # Force re-resolve all source refs (ignore lockfile)
 rulesync install --update
@@ -195,7 +201,7 @@ rulesync fetch owner/repo@ref:path   # Both ref and path
 | `--subagents-files <files>` | Comma-separated subagent file paths relative to `subagents/`                          | unset (all)                      |
 | `--skills-paths <paths>` | Comma-separated skill directory prefixes relative to `skills/`                            | unset (all)                      |
 | `--skills-files <files>` | Comma-separated skill file paths relative to `skills/`                                    | unset (all)                      |
-| `--transport <mode>`    | Fetch transport: `github` (REST API) or `git` (git CLI via SSH/credential helper)         | `git`                            |
+| `--transport <mode>`    | Fetch transport: `github` (REST API) or `git` (git CLI via SSH/credential helper)         | `github`                         |
 | `--token <token>`       | Git provider token for private repositories (`github` transport)                           | `GITHUB_TOKEN` or `GH_TOKEN` env |
 
 ### Examples

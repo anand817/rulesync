@@ -766,5 +766,77 @@ describe("config-resolver", () => {
         }),
       ).rejects.toThrow();
     });
+
+    it("should accept declarative gitProtocol values", async () => {
+      await writeFileContent(
+        join(testDir, "rulesync.jsonc"),
+        JSON.stringify({
+          outputRoots: ["./"],
+          sources: [
+            { source: "owner/repo", transport: "git", gitProtocol: "ssh" },
+            { source: "owner/repo-two", transport: "git", gitProtocol: "https" },
+          ],
+        }),
+      );
+
+      const config = await ConfigResolver.resolve({
+        configPath: join(testDir, "rulesync.jsonc"),
+      });
+
+      expect(config.getSources()).toEqual([
+        { source: "owner/repo", transport: "git", gitProtocol: "ssh" },
+        { source: "owner/repo-two", transport: "git", gitProtocol: "https" },
+      ]);
+    });
+
+    it("should reject invalid declarative gitProtocol values", async () => {
+      await writeFileContent(
+        join(testDir, "rulesync.jsonc"),
+        JSON.stringify({
+          outputRoots: ["./"],
+          sources: [{ source: "owner/repo", transport: "git", gitProtocol: "git+ssh" }],
+        }),
+      );
+
+      await expect(
+        ConfigResolver.resolve({
+          configPath: join(testDir, "rulesync.jsonc"),
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("should accept declarative URL source entries", async () => {
+      await writeFileContent(
+        join(testDir, "rulesync.jsonc"),
+        JSON.stringify({
+          outputRoots: ["./"],
+          sources: [{ source: "https://github.com/owner/repo", transport: "git" }],
+        }),
+      );
+
+      const config = await ConfigResolver.resolve({
+        configPath: join(testDir, "rulesync.jsonc"),
+      });
+      expect(config.getSources()).toEqual([
+        { source: "https://github.com/owner/repo", transport: "git" },
+      ]);
+    });
+
+    it("should accept declarative scp source entries", async () => {
+      await writeFileContent(
+        join(testDir, "rulesync.jsonc"),
+        JSON.stringify({
+          outputRoots: ["./"],
+          sources: [{ source: "git@github.com:owner/repo.git", transport: "git" }],
+        }),
+      );
+
+      const config = await ConfigResolver.resolve({
+        configPath: join(testDir, "rulesync.jsonc"),
+      });
+      expect(config.getSources()).toEqual([
+        { source: "git@github.com:owner/repo.git", transport: "git" },
+      ]);
+    });
   });
 });

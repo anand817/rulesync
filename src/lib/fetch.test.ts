@@ -344,6 +344,30 @@ describe("fetchFiles", () => {
     expect(await fileExists(join(testDir, ".rulesync", "rules", "overview.md"))).toBe(true);
   });
 
+  it("should honor https gitProtocol for canonical git transport", async () => {
+    vi.mocked(fetchRepositoryFiles).mockResolvedValue([
+      { relativePath: "rules/overview.md", content: "# Overview", size: 10 },
+    ]);
+
+    const summary = await fetchFiles({
+      logger,
+      source: "owner/repo",
+      options: { transport: "git", gitProtocol: "https", features: ["rules"] },
+      outputRoot: testDir,
+    });
+
+    expect(resolveDefaultRef).toHaveBeenCalledWith("https://github.com/owner/repo.git");
+    expect(resolveRefToSha).toHaveBeenCalledWith("https://github.com/owner/repo.git", "main");
+    expect(fetchRepositoryFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://github.com/owner/repo.git",
+        ref: "main",
+        basePath: ".rulesync",
+      }),
+    );
+    expect(summary.created).toBe(1);
+  });
+
   it("should fetch files via git transport using ssh source URL", async () => {
     vi.mocked(fetchRepositoryFiles).mockResolvedValue([
       { relativePath: "rules/overview.md", content: "# Overview", size: 10 },

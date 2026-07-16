@@ -33,6 +33,9 @@ import { GitHubClient, GitHubClientError, logGitHubAuthHints } from "./github-cl
 import { listDirectoryRecursive, withSemaphore } from "./github-utils.js";
 import { parseSource } from "./source-parser.js";
 import {
+  resolveGitUrlFromSource,
+} from "./source-git-url.js";
+import {
   type LockedSkill,
   type LockedSource,
   type SourcesLock,
@@ -69,42 +72,107 @@ type RemoteSkillFile = {
 };
 
 function normalizeRelativeSelectorPath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+  return path.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+
+function normalizeRepositoryBasePath(path: string | undefined): string {
+  if (path === undefined) {
+    return RULESYNC_RELATIVE_DIR_PATH;
+  }
+  const normalized = normalizeRelativeSelectorPath(path);
+  return normalized.length === 0 ? "." : normalized;
+}
+
+function resolveSourceBasePath(params: {
+  sourceEntry: SourceEntry;
+  parsed?: ParsedSource;
+}): string {
+  const { sourceEntry, parsed } = params;
+  if (sourceEntry.path !== undefined) {
+    return normalizeRepositoryBasePath(sourceEntry.path);
+  }
+  if (parsed?.path !== undefined) {
+    return normalizeRepositoryBasePath(parsed.path);
+  }
+  return RULESYNC_RELATIVE_DIR_PATH;
+}
+
+function resolveEntityBasePath(params: {
+  sourceEntry: SourceEntry;
+  parsed?: ParsedSource;
+  entity: "rules" | "commands" | "subagents" | "skills";
+}): string {
+  const basePath = resolveSourceBasePath(params);
+  if (basePath === ".") {
+    return params.entity;
+  }
+  return `${basePath}/${params.entity}`;
+}
+
+function safelyParseSource(source: string): ParsedSource | undefined {
+  try {
+    return parseSource(source);
+  } catch {
+    return undefined;
+  }
 }
 
 function getSourceFeatureSelectors(entry: SourceEntry): Array<{
   feature: "rules" | "commands" | "subagents";
-  selector: SourceFeatureSelector;
+  paths: string[];
 }> {
   const selectors: Array<{
     feature: "rules" | "commands" | "subagents";
-    selector: SourceFeatureSelector;
+    paths: string[];
   }> = [];
-  if (entry.rules) selectors.push({ feature: "rules", selector: entry.rules });
-  if (entry.commands) selectors.push({ feature: "commands", selector: entry.commands });
-  if (entry.subagents) selectors.push({ feature: "subagents", selector: entry.subagents });
+  if (entry.rules) {
+    selectors.push({ feature: "rules", paths: getSelectorPaths(entry.rules) });
+  }
+  if (entry.commands) {
+    selectors.push({ feature: "commands", paths: getSelectorPaths(entry.commands) });
+  }
+  if (entry.subagents) {
+    selectors.push({ feature: "subagents", paths: getSelectorPaths(entry.subagents) });
+  }
   return selectors;
 }
 
-function getSkillPathFilter(selector: SourceFeatureSelector | undefined): string[] {
-  if (!selector?.paths || selector.paths.length === 0) {
-    return ["*"];
+function getSelectorPaths(selector: SourceFeatureSelector | undefined): string[] {
+  if (selector === undefined) {
+    return [];
+  }
+  if (!selector.paths || selector.paths.length === 0) {
+    return [];
   }
   return selector.paths.map((path) => normalizeRelativeSelectorPath(path));
 }
 
-function resolveSkillsBasePath(params: {
-  sourceEntry: SourceEntry;
-  parsed: ParsedSource;
-}): { path: string; usedImplicitDefault: boolean } {
-  const { sourceEntry, parsed } = params;
-  if (sourceEntry.path !== undefined) {
-    return { path: sourceEntry.path, usedImplicitDefault: false };
+function pathMatchesPrefix(relativePath: string, prefix: string): boolean {
+  if (prefix.length === 0 || prefix === ".") return true;
+  return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+}
+
+function matchesSelectorPaths(relativePath: string, selectors: string[]): boolean {
+  const normalizedRelativePath = normalizeRelativeSelectorPath(relativePath);
+  if (selectors.length === 0) {
+    return false;
   }
-  if (parsed.path !== undefined) {
-    return { path: parsed.path, usedImplicitDefault: false };
+  if (selectors.includes("*")) {
+    return true;
   }
-  return { path: `${RULESYNC_RELATIVE_DIR_PATH}/skills`, usedImplicitDefault: true };
+  return selectors.some((selector) => pathMatchesPrefix(normalizedRelativePath, selector));
+}
+
+function getRequestedSkillNameForFallback(skillSelectors: string[]): string | undefined {
+  if (skillSelectors.length !== 1 || skillSelectors[0] === "*") {
+    return undefined;
+  }
+  const [selector] = skillSelectors;
+  if (selector === undefined) {
+    return undefined;
+  }
+  const firstSegment = selector.split("/")[0];
+  return firstSegment && firstSegment.length > 0 ? firstSegment : undefined;
 }
 
 /**
@@ -154,8 +222,10 @@ export async function resolveAndFetchSources(params: {
 
   for (const sourceEntry of sources) {
     try {
+      const parsed = safelyParseSource(sourceEntry.source);
       const result = await fetchSourceByTransport({
         sourceEntry,
+        parsed,
         client,
         projectRoot,
         lock,
@@ -175,6 +245,7 @@ export async function resolveAndFetchSources(params: {
 
       const nonSkillResult = await fetchSelectedNonSkillFeatures({
         sourceEntry,
+        parsed,
         projectRoot,
         logger,
       });
@@ -247,6 +318,7 @@ function assertFrozenLockCoversSources(params: {
  */
 async function fetchSourceByTransport(params: {
   sourceEntry: SourceEntry;
+  parsed?: ParsedSource;
   client: GitHubClient;
   projectRoot: string;
   lock: SourcesLock;
@@ -258,6 +330,7 @@ async function fetchSourceByTransport(params: {
 }): Promise<{ skillCount: number; fetchedSkillNames: string[]; updatedLock: SourcesLock }> {
   const {
     sourceEntry,
+    parsed,
     client,
     projectRoot,
     lock,
@@ -271,6 +344,7 @@ async function fetchSourceByTransport(params: {
   if (transport === "git") {
     return fetchSourceViaGit({
       sourceEntry,
+      parsed,
       projectRoot,
       lock,
       localSkillNames,
@@ -280,8 +354,10 @@ async function fetchSourceByTransport(params: {
       logger,
     });
   }
+  const parsedSource = params.parsed ?? parseSource(sourceEntry.source);
   return fetchSource({
     sourceEntry,
+    parsed: parsedSource,
     client,
     projectRoot,
     lock,
@@ -562,33 +638,38 @@ function groupRemoteFilesBySkillRoot(params: {
 
 async function fetchSelectedNonSkillFeatures(params: {
   sourceEntry: SourceEntry;
+  parsed?: ParsedSource;
   projectRoot: string;
   logger: Logger;
 }): Promise<{ fetchedFileCount: number }> {
-  const { sourceEntry, projectRoot, logger } = params;
+  const { sourceEntry, parsed, projectRoot, logger } = params;
   const selectors = getSourceFeatureSelectors(sourceEntry);
   if (selectors.length === 0) {
     return { fetchedFileCount: 0 };
   }
 
   let fetchedFileCount = 0;
-  for (const { feature, selector } of selectors) {
+  for (const { feature, paths } of selectors) {
+    if (paths.length === 0) {
+      logger.debug(`Skipping ${feature} fetch for ${sourceEntry.source}: selector has no explicit paths.`);
+      continue;
+    }
+
     const fetchOptions: FetchOptions = {
       ref: sourceEntry.ref,
-      path: sourceEntry.path,
+      path: resolveSourceBasePath({ sourceEntry, parsed }),
       output: ".rulesync",
       conflict: "overwrite",
       features: [feature],
+      transport: sourceEntry.transport,
+      gitProtocol: sourceEntry.gitProtocol,
     };
     if (feature === "rules") {
-      fetchOptions.rulesPaths = selector.paths;
-      fetchOptions.rulesFiles = selector.files;
+      fetchOptions.rulesPaths = paths;
     } else if (feature === "commands") {
-      fetchOptions.commandsPaths = selector.paths;
-      fetchOptions.commandsFiles = selector.files;
+      fetchOptions.commandsPaths = paths;
     } else {
-      fetchOptions.subagentsPaths = selector.paths;
-      fetchOptions.subagentsFiles = selector.files;
+      fetchOptions.subagentsPaths = paths;
     }
 
     const summary = await fetchFiles({
@@ -648,7 +729,7 @@ async function fetchRootLevelFallbackSkill(params: {
   parsed: ParsedSource;
   ref: string;
   resolvedSha: string;
-  skillFilter: string[];
+  requestedSkillName: string;
   isWildcard: boolean;
   curatedDir: string;
   locked: LockedSource | undefined;
@@ -665,7 +746,7 @@ async function fetchRootLevelFallbackSkill(params: {
     parsed,
     ref,
     resolvedSha,
-    skillFilter,
+    requestedSkillName,
     isWildcard,
     curatedDir,
     locked,
@@ -696,10 +777,10 @@ async function fetchRootLevelFallbackSkill(params: {
 
   const groupedRootFiles = groupRemoteFilesBySkillRoot({
     remoteFiles: rootSkillFiles,
-    skillFilter,
+    skillFilter: [requestedSkillName],
     isWildcard,
   });
-  const [fallbackSkillName] = groupedRootFiles.keys();
+  const fallbackSkillName = requestedSkillName;
   if (fallbackSkillName === undefined) {
     return { handled: false, remoteSkillNames: [] };
   }
@@ -734,6 +815,8 @@ async function fetchRootLevelFallbackSkill(params: {
  */
 async function fetchGithubSkillDir(params: {
   skillDir: { name: string; path: string };
+  skillSelectors: string[];
+  isWildcard: boolean;
   parsed: ParsedSource;
   ref: string;
   resolvedSha: string;
@@ -743,9 +826,11 @@ async function fetchGithubSkillDir(params: {
   client: GitHubClient;
   semaphore: Semaphore;
   logger: Logger;
-}): Promise<LockedSkill> {
+}): Promise<LockedSkill | undefined> {
   const {
     skillDir,
+    skillSelectors,
+    isWildcard,
     parsed,
     ref,
     resolvedSha,
@@ -775,7 +860,13 @@ async function fetchGithubSkillDir(params: {
       );
       return false;
     }
-    return true;
+    if (isWildcard) {
+      return true;
+    }
+
+    const relativeToSkill = file.path.substring(skillDir.path.length + 1);
+    const selectorRelativePath = `${skillDir.name}/${relativeToSkill}`;
+    return matchesSelectorPaths(selectorRelativePath, skillSelectors);
   });
 
   // Fetch all file contents
@@ -786,6 +877,10 @@ async function fetchGithubSkillDir(params: {
       client.getFileContent(parsed.owner, parsed.repo, file.path, ref),
     );
     skillFiles.push({ relativePath: relativeToSkill, content });
+  }
+
+  if (skillFiles.length === 0) {
+    return undefined;
   }
 
   return writeSkillAndComputeIntegrity({
@@ -810,7 +905,7 @@ async function discoverGithubSkillDirs(params: {
   parsed: ParsedSource;
   ref: string;
   resolvedSha: string;
-  skillFilter: string[];
+  skillSelectors: string[];
   isWildcard: boolean;
   curatedDir: string;
   locked: LockedSource | undefined;
@@ -835,7 +930,7 @@ async function discoverGithubSkillDirs(params: {
     parsed,
     ref,
     resolvedSha,
-    skillFilter,
+    skillSelectors,
     isWildcard,
     curatedDir,
     locked,
@@ -854,9 +949,9 @@ async function discoverGithubSkillDirs(params: {
       .filter((e) => e.type === "dir")
       .map((e) => ({ name: e.name, path: e.path }));
 
-    const [singleSkillName] = skillFilter;
+    const requestedSkillName = getRequestedSkillNameForFallback(skillSelectors);
     const hasRequestedSkillDir =
-      singleSkillName !== undefined && remoteSkillDirs.some((d) => d.name === singleSkillName);
+      requestedSkillName !== undefined && remoteSkillDirs.some((d) => d.name === requestedSkillName);
     // Detect a root-level SKILL.md from the directory listing we already have, so
     // the fallback (and its full root-file fetch) is skipped when there is no
     // root skill to install — not just when the requested dir is absent.
@@ -864,14 +959,20 @@ async function discoverGithubSkillDirs(params: {
       (entry) => entry.type === "file" && entry.name === SKILL_FILE_NAME,
     );
     if (
-      shouldUseRootFallback({ skillFilter, isWildcard, hasRootSkillFile, hasRequestedSkillDir })
+      requestedSkillName !== undefined &&
+      shouldUseRootFallback({
+        skillFilter: [requestedSkillName],
+        isWildcard,
+        hasRootSkillFile,
+        hasRequestedSkillDir,
+      })
     ) {
       const fallback = await fetchRootLevelFallbackSkill({
         entries,
         parsed,
         ref,
         resolvedSha,
-        skillFilter,
+        requestedSkillName,
         isWildcard,
         curatedDir,
         locked,
@@ -907,6 +1008,7 @@ async function discoverGithubSkillDirs(params: {
  */
 async function fetchSource(params: {
   sourceEntry: SourceEntry;
+  parsed: ParsedSource;
   client: GitHubClient;
   projectRoot: string;
   lock: SourcesLock;
@@ -921,6 +1023,7 @@ async function fetchSource(params: {
 }> {
   const {
     sourceEntry,
+    parsed,
     client,
     projectRoot,
     localSkillNames,
@@ -930,8 +1033,6 @@ async function fetchSource(params: {
   } = params;
   const { lock } = params;
 
-  const parsed = parseSource(sourceEntry.source);
-
   if (parsed.provider === "gitlab") {
     logger.warn(`GitLab sources are not yet supported. Skipping "${sourceEntry.source}".`);
     return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
@@ -940,6 +1041,14 @@ async function fetchSource(params: {
   const sourceKey = sourceEntry.source;
   const locked = getLockedSource(lock, sourceKey);
   const lockedSkillNames = locked ? getLockedSkillNames(locked) : [];
+  const skillSelectors = getSelectorPaths(sourceEntry.skills);
+
+  if (skillSelectors.length === 0) {
+    logger.debug(
+      `Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`,
+    );
+    return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
+  }
 
   // Resolve the ref to a commit SHA
   const { ref, resolvedSha, requestedRef } = await resolveGithubFetchRef({
@@ -967,21 +1076,17 @@ async function fetchSource(params: {
   }
 
   // Determine which skills to fetch
-  const skillFilter = getSkillPathFilter(sourceEntry.skills);
-  const isWildcard = skillFilter.length === 1 && skillFilter[0] === "*";
+  const isWildcard = skillSelectors.includes("*");
   const semaphore = new Semaphore(FETCH_CONCURRENCY_LIMIT);
   const fetchedSkills: Record<string, LockedSkill> = {};
 
-  // List the skills/ directory in the remote repo.
-  // If a path is given in the source URL, it points directly to the skills directory.
-  // Otherwise, look for "skills/" at the repo root.
-  const skillsBasePath = resolveSkillsBasePath({ sourceEntry, parsed });
+  const skillsBasePath = resolveEntityBasePath({ sourceEntry, parsed, entity: "skills" });
   let discovery = await discoverGithubSkillDirs({
-    skillsBasePath: skillsBasePath.path,
+    skillsBasePath,
     parsed,
     ref,
     resolvedSha,
-    skillFilter,
+    skillSelectors,
     isWildcard,
     curatedDir,
     locked,
@@ -993,41 +1098,17 @@ async function fetchSource(params: {
     fetchedSkills,
     logger,
   });
-  if (
-    skillsBasePath.usedImplicitDefault &&
-    (discovery.status === "notFound" ||
-      (discovery.status === "ok" &&
-        discovery.remoteSkillDirs.length === 0 &&
-        !discovery.fallbackHandled))
-  ) {
-    discovery = await discoverGithubSkillDirs({
-      skillsBasePath: "skills",
-      parsed,
-      ref,
-      resolvedSha,
-      skillFilter,
-      isWildcard,
-      curatedDir,
-      locked,
-      sourceKey,
-      localSkillNames,
-      alreadyFetchedSkillNames,
-      client,
-      semaphore,
-      fetchedSkills,
-      logger,
-    });
-  }
   if (discovery.status === "notFound") {
     logger.warn(`No skills/ directory found in ${sourceKey}. Skipping.`);
     return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
   }
   const { remoteSkillDirs, fallbackHandled, remoteSkillNames: fallbackSkillNames } = discovery;
 
-  // Filter skills by name
   const filteredDirs = isWildcard
     ? remoteSkillDirs
-    : remoteSkillDirs.filter((d) => skillFilter.includes(d.name));
+    : remoteSkillDirs.filter((d) =>
+        skillSelectors.some((selector) => selector === d.name || selector.startsWith(`${d.name}/`)),
+      );
   const remoteSkillNames = fallbackHandled ? fallbackSkillNames : filteredDirs.map((d) => d.name);
 
   if (locked) {
@@ -1047,8 +1128,10 @@ async function fetchSource(params: {
       continue;
     }
 
-    fetchedSkills[skillDir.name] = await fetchGithubSkillDir({
+    const fetchedSkill = await fetchGithubSkillDir({
       skillDir,
+      skillSelectors,
+      isWildcard,
       parsed,
       ref,
       resolvedSha,
@@ -1059,6 +1142,10 @@ async function fetchSource(params: {
       semaphore,
       logger,
     });
+    if (!fetchedSkill) {
+      continue;
+    }
+    fetchedSkills[skillDir.name] = fetchedSkill;
     logger.debug(`Fetched skill "${skillDir.name}" from ${sourceKey}`);
   }
 
@@ -1085,6 +1172,7 @@ async function fetchSource(params: {
  */
 async function fetchSourceViaGit(params: {
   sourceEntry: SourceEntry;
+  parsed?: ParsedSource;
   projectRoot: string;
   lock: SourcesLock;
   localSkillNames: Set<string>;
@@ -1095,6 +1183,7 @@ async function fetchSourceViaGit(params: {
 }): Promise<{ skillCount: number; fetchedSkillNames: string[]; updatedLock: SourcesLock }> {
   const {
     sourceEntry,
+    parsed,
     projectRoot,
     localSkillNames,
     alreadyFetchedSkillNames,
@@ -1103,9 +1192,22 @@ async function fetchSourceViaGit(params: {
     logger,
   } = params;
   const { lock } = params;
-  const url = sourceEntry.source;
-  const locked = getLockedSource(lock, url);
+  const sourceKey = sourceEntry.source;
+  const { gitUrl } = resolveGitUrlFromSource({
+    source: sourceEntry.source,
+    gitProtocol: sourceEntry.gitProtocol,
+    allowRawGitUrl: true,
+  });
+  const locked = getLockedSource(lock, sourceKey);
   const lockedSkillNames = locked ? getLockedSkillNames(locked) : [];
+  const skillSelectors = getSelectorPaths(sourceEntry.skills);
+
+  if (skillSelectors.length === 0) {
+    logger.debug(
+      `Skipping skills fetch for ${sourceKey}: selector has no explicit paths.`,
+    );
+    return { skillCount: 0, fetchedSkillNames: [], updatedLock: lock };
+  }
 
   let resolvedSha: string;
   let requestedRef: string | undefined;
@@ -1118,9 +1220,9 @@ async function fetchSourceViaGit(params: {
     }
   } else if (sourceEntry.ref) {
     requestedRef = sourceEntry.ref;
-    resolvedSha = await resolveRefToSha(url, requestedRef);
+    resolvedSha = await resolveRefToSha(gitUrl, requestedRef);
   } else {
-    const def = await resolveDefaultRef(url);
+    const def = await resolveDefaultRef(gitUrl);
     requestedRef = def.ref;
     resolvedSha = def.sha;
   }
@@ -1136,26 +1238,38 @@ async function fetchSourceViaGit(params: {
   if (!requestedRef) {
     if (frozen) {
       throw new Error(
-        `Frozen install failed: lockfile entry for "${url}" is missing requestedRef. Run 'rulesync install' to update the lockfile.`,
+        `Frozen install failed: lockfile entry for "${sourceKey}" is missing requestedRef. Run 'rulesync install' to update the lockfile.`,
       );
     }
-    const def = await resolveDefaultRef(url);
+    const def = await resolveDefaultRef(gitUrl);
     requestedRef = def.ref;
     resolvedSha = def.sha;
   }
 
-  const skillFilter = getSkillPathFilter(sourceEntry.skills);
-  const isWildcard = skillFilter.length === 1 && skillFilter[0] === "*";
+  const isWildcard = skillSelectors.includes("*");
   const remoteFiles = await fetchSkillFiles({
-    url,
+    url: gitUrl,
     ref: requestedRef,
-    skillsPath: sourceEntry.path ?? `${RULESYNC_RELATIVE_DIR_PATH}/skills`,
+    skillsPath: resolveEntityBasePath({ sourceEntry, parsed, entity: "skills" }),
   });
 
-  const skillFileMap = groupRemoteFilesBySkillRoot({ remoteFiles, skillFilter, isWildcard });
+  const filteredRemoteFiles = isWildcard
+    ? remoteFiles
+    : remoteFiles.filter((file) => matchesSelectorPaths(file.relativePath, skillSelectors));
+  const skillFileMap = groupRemoteFilesBySkillRoot({
+    remoteFiles: filteredRemoteFiles,
+    skillFilter: skillSelectors,
+    isWildcard,
+  });
 
-  const allNames = [...skillFileMap.keys()];
-  const filteredNames = isWildcard ? allNames : allNames.filter((n) => skillFilter.includes(n));
+  const allNames = Array.from(skillFileMap.keys());
+  const filteredNames = isWildcard
+    ? allNames
+    : allNames.filter((skillName) =>
+        skillSelectors.some(
+          (selector) => selector === skillName || selector.startsWith(`${skillName}/`),
+        ),
+      );
 
   if (locked) {
     await cleanPreviousCuratedSkills({ curatedDir, lockedSkillNames, logger });
@@ -1166,7 +1280,7 @@ async function fetchSourceViaGit(params: {
     if (
       shouldSkipSkill({
         skillName,
-        sourceKey: url,
+        sourceKey,
         localSkillNames,
         alreadyFetchedSkillNames,
         logger,
@@ -1181,14 +1295,14 @@ async function fetchSourceViaGit(params: {
       curatedDir,
       locked,
       resolvedSha,
-      sourceKey: url,
+      sourceKey,
       logger,
     });
   }
 
   const result = buildLockUpdate({
     lock,
-    sourceKey: url,
+    sourceKey,
     fetchedSkills,
     locked,
     requestedRef,
